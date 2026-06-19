@@ -26,7 +26,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
+            target: x86_64-unknown-linux-musl
             archive_ext: tar.gz
             exe: ""
           - os: macos-14
@@ -55,6 +55,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: vpnnode
+
+      - name: Install Linux musl linker
+        if: contains(matrix.target, 'unknown-linux-musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Build vpn-client
         working-directory: vpnnode
