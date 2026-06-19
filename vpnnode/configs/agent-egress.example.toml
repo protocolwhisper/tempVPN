@@ -1,0 +1,12 @@
+# Copy locally and keep the admin token secret.
+node_url = "https://GERMANY_VPS_IP:8080"
+admin_token = "change-me"
+proxy_addr = "127.0.0.1:1080"
+status_file = "/tmp/agent-egress-status.json"
+wg_quick_command = "wg-quick"
+wg_command = "wg"
+interface_name = "aegress0"
+
+# Optional but recommended. If unset, agent-egress compares against the host
+# portion of the daemon session endpoint when it is an IP address.
+expected_exit_ip = "GERMANY_VPS_IP"

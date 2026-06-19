@@ -1,0 +1,12 @@
+# Copy to vpn-node.toml on the Germany VPS and keep the admin token secret.
+bind_addr = "0.0.0.0:8080"
+admin_token = "change-me"
+wg_interface = "wg0"
+wg_command = "wg"
+server_public_key = "GERMANY_NODE_PUBLIC_KEY"
+endpoint = "GERMANY_VPS_IP:51820"
+tunnel_cidr = "10.8.0.0/24"
+max_duration_seconds = 3600
+sweep_interval_seconds = 10
+cleanup_on_shutdown = true
+mock_wg = false
