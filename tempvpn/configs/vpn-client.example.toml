@@ -1,7 +1,11 @@
-# Copy locally for optional overrides. The node URL and expected exit IP default
-# to the current GCP node, and the admin token can be passed with --admin-token.
+# Copy locally for optional overrides. The client pays with mppx, using the
+# account created by https://mpp.dev/quickstart/agent.
 node_url = "http://USA_VPS_IP:8080"
-# admin_token = "change-me"
+mppx_command = "mppx"
+# mppx_account = "default"
+# mppx_config = "mppx.config.ts"
+# mppx_network = "testnet"
+# mppx_rpc_url = "https://rpc.moderato.tempo.xyz"
 proxy_addr = "127.0.0.1:1080"
 status_file = "/tmp/vpn-client-status.json"
 wg_quick_command = "wg-quick"

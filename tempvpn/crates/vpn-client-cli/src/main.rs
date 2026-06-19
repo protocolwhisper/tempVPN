@@ -19,7 +19,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::{
     cli::{Cli, Command},
-    config::{Config, Overrides},
+    config::Config,
     error::{Error, Result},
     node_client::NodeClient,
     process::{run_child_with_kill_switch, RunOutcome},
@@ -38,13 +38,7 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let config = Config::load(
-        cli.config,
-        Overrides {
-            admin_token: cli.admin_token,
-        },
-    )
-    .await?;
+    let config = Config::load(cli.config).await?;
 
     match cli.command {
         Command::Run(args) => run(config, args).await,
@@ -56,13 +50,13 @@ async fn main() -> Result<()> {
 }
 
 async fn run(config: Config, args: cli::RunArgs) -> Result<()> {
-    let node = NodeClient::new(config.node_url.clone(), config.admin_token.clone());
-    let keypair = keygen::generate(&config.wg_command).await?;
-    info!("generated ephemeral WireGuard keypair");
-
-    let session = node
-        .create_session(&keypair.public_key, args.duration)
-        .await?;
+    let (keypair, session) = get_session(
+        &config,
+        args.duration,
+        args.session_response.as_ref(),
+        args.private_key_path.as_ref(),
+    )
+    .await?;
     info!(
         session_id = session.session_id,
         assigned_ip = session.assigned_ip,
@@ -161,11 +155,10 @@ async fn run(config: Config, args: cli::RunArgs) -> Result<()> {
             warn!(error = %err, "failed to bring WireGuard tunnel down");
         }
     }
-    if let Err(err) = node.revoke_session(&session.session_id).await {
-        warn!(error = %err, "failed to revoke VPN session");
-    } else {
-        info!(session_id = session.session_id, "revoked VPN session");
-    }
+    info!(
+        session_id = session.session_id,
+        "local VPN resources stopped; paid session will expire automatically"
+    );
 
     result?;
     if child_code != 0 {
@@ -176,13 +169,13 @@ async fn run(config: Config, args: cli::RunArgs) -> Result<()> {
 }
 
 async fn connect(config: Config, args: cli::ConnectArgs) -> Result<()> {
-    let node = NodeClient::new(config.node_url.clone(), config.admin_token.clone());
-    let keypair = keygen::generate(&config.wg_command).await?;
-    info!("generated ephemeral WireGuard keypair");
-
-    let session = node
-        .create_session(&keypair.public_key, args.duration)
-        .await?;
+    let (keypair, session) = get_session(
+        &config,
+        args.duration,
+        args.session_response.as_ref(),
+        args.private_key_path.as_ref(),
+    )
+    .await?;
     info!(
         session_id = session.session_id,
         assigned_ip = session.assigned_ip,
@@ -197,13 +190,11 @@ async fn connect(config: Config, args: cli::ConnectArgs) -> Result<()> {
         .await?;
 
     if let Err(err) = wireguard_client::up_config(&config.wg_quick_command, &config_path).await {
-        let _ = node.revoke_session(&session.session_id).await;
         let _ = fs::remove_file(&config_path).await;
         return Err(err);
     }
 
     if !wireguard_client::interface_is_active(&config.wg_command, &config.interface_name).await {
-        let _ = node.revoke_session(&session.session_id).await;
         let _ = wireguard_client::down_config(&config.wg_quick_command, &config_path).await;
         let _ = fs::remove_file(&config_path).await;
         return Err(Error::TunnelInactive(config.interface_name));
@@ -234,7 +225,6 @@ async fn connect(config: Config, args: cli::ConnectArgs) -> Result<()> {
 
 async fn disconnect(config: Config) -> Result<()> {
     let status = status::read(&config.status_file).await?;
-    let node = NodeClient::new(config.node_url.clone(), config.admin_token.clone());
 
     if let Some(config_path) = &status.config_path {
         wireguard_client::down_config(&config.wg_quick_command, config_path).await?;
@@ -244,23 +234,20 @@ async fn disconnect(config: Config) -> Result<()> {
         wireguard_client::down_config(&config.wg_quick_command, &path).await?;
     }
 
-    if let Err(err) = node.revoke_session(&status.session_id).await {
-        warn!(error = %err, "failed to revoke VPN session");
-    } else {
-        info!(session_id = status.session_id, "revoked VPN session");
-    }
-
     status::remove(&config.status_file).await;
     println!("Disconnected: {}", status.interface_name);
+    println!("Session expires automatically: {}", status.session_id);
     Ok(())
 }
 
 async fn generate_config(config: Config, args: cli::ConfigArgs) -> Result<()> {
-    let node = NodeClient::new(config.node_url.clone(), config.admin_token.clone());
-    let keypair = keygen::generate(&config.wg_command).await?;
-    let session = node
-        .create_session(&keypair.public_key, args.duration)
-        .await?;
+    let (keypair, session) = get_session(
+        &config,
+        args.duration,
+        args.session_response.as_ref(),
+        args.private_key_path.as_ref(),
+    )
+    .await?;
     let wg_config = wireguard_client::render_config(&keypair, &session, &args.allowed_ips);
 
     if let Some(path) = args.output {
@@ -277,6 +264,34 @@ async fn generate_config(config: Config, args: cli::ConfigArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+async fn get_session(
+    config: &Config,
+    duration: u64,
+    session_response: Option<&PathBuf>,
+    private_key_path: Option<&PathBuf>,
+) -> Result<(keygen::Keypair, node_client::Session)> {
+    if let Some(session_response) = session_response {
+        let private_key_path = private_key_path.ok_or_else(|| {
+            Error::InvalidConfig("--private-key-path is required with --session-response".into())
+        })?;
+        let private_key = fs::read_to_string(private_key_path).await?;
+        let session = fs::read_to_string(session_response).await?;
+        return Ok((
+            keygen::Keypair {
+                private_key: private_key.trim().to_string(),
+                public_key: String::new(),
+            },
+            serde_json::from_str(&session)?,
+        ));
+    }
+
+    let node = NodeClient::new(config);
+    let keypair = keygen::generate(&config.wg_command).await?;
+    info!("generated ephemeral WireGuard keypair");
+    let session = node.create_session(&keypair.public_key, duration).await?;
+    Ok((keypair, session))
 }
 
 async fn print_status(config: Config) -> Result<()> {

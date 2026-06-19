@@ -7,9 +7,12 @@ zone   = "us-central1-a"
 # Do not commit a real token.
 admin_token = "change-me"
 
-# Strongly recommended: restrict these to your current public IP /32.
-ssh_source_ranges       = ["YOUR_PUBLIC_IP/32"]
-admin_api_source_ranges = ["YOUR_PUBLIC_IP/32"]
+# Strongly recommended: restrict SSH to your current public IP /32.
+ssh_source_ranges = ["YOUR_PUBLIC_IP/32"]
+
+# Keep this public so anyone can buy a paid VPN session from POST /sessions.
+# Admin-only routes still require the daemon admin token.
+admin_api_source_ranges = ["0.0.0.0/0"]
 
 # Optional: provide an HTTPS URL to a Linux build of vpn-node-daemon.
 # If empty, Terraform will prepare the VM and systemd unit, but you must upload

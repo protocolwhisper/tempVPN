@@ -10,7 +10,7 @@ Client/Codex -> 127.0.0.1:1080 SOCKS5 proxy -> WireGuard tunnel -> USA VPS -> in
 
 ## Binaries
 
-- `vpn-node-daemon`: runs on the USA VPS and grants temporary WireGuard peers through an admin-token protected HTTP API.
+- `vpn-node-daemon`: runs on the USA VPS and grants temporary WireGuard peers through an MPP-protected HTTP API.
 - `vpn-client`: runs locally, requests a temporary session, starts a WireGuard tunnel, starts a loopback-only SOCKS5 proxy, and launches the child command with proxy env vars.
 
 ## Build
@@ -63,19 +63,27 @@ The client machine needs:
 - WireGuard tools on `PATH`: `wg` and `wg-quick`.
 - Permission to create a WireGuard interface, so tunnel commands usually run with `sudo`.
 - Network access to the node API. For now the Rust client defaults to `http://34.30.107.52:8080`.
-- The daemon admin token, provided with `--admin-token`, `VPN_CLIENT_ADMIN_TOKEN`, or a local config file.
+- `mppx` installed and configured from the MPP agent quickstart: `https://mpp.dev/quickstart/agent`.
+- A funded/default `mppx` account, for example from `mppx account create` and the quickstart funding step.
 
-The shortest path is no config file. Build once, then connect in one command:
+The explicit agent flow is: create a local WireGuard keypair, pay for a session with `mppx`, then use `vpn-client` to connect with the paid session response.
 
 ```sh
 cargo build -p vpn-client-cli
-sudo ./target/debug/vpn-client --admin-token "$VPN_NODE_ADMIN_TOKEN" connect --duration 30m
+wg genkey | tee /tmp/vpn-client.key | wg pubkey > /tmp/vpn-client.pub
+chmod 600 /tmp/vpn-client.key
+mppx http://34.30.107.52:8080/sessions \
+  --json-body "{\"client_public_key\":\"$(cat /tmp/vpn-client.pub)\",\"duration_seconds\":1800}" \
+  --silent > /tmp/vpn-session.json
+sudo ./target/debug/vpn-client connect \
+  --session-response /tmp/vpn-session.json \
+  --private-key-path /tmp/vpn-client.key
 ```
 
-Disconnect and revoke the server session:
+Disconnect the local tunnel. The paid server-side session expires automatically:
 
 ```sh
-sudo ./target/debug/vpn-client --admin-token "$VPN_NODE_ADMIN_TOKEN" disconnect
+sudo ./target/debug/vpn-client disconnect
 ```
 
 You can also create a local config for overrides:
@@ -87,41 +95,39 @@ cp configs/vpn-client.example.toml vpn-client.toml
 Optional values:
 
 - `node_url`: the daemon URL, for example `http://34.30.107.52:8080`.
-- `admin_token`: the daemon admin token. Prefer `--admin-token` or `VPN_CLIENT_ADMIN_TOKEN`.
+- `mppx_command`: path to the `mppx` binary. Defaults to `mppx`.
+- `mppx_account`: optional named `mppx` account. Defaults to the `mppx` default account or `MPPX_ACCOUNT`.
+- `mppx_config`: optional `mppx` config path.
+- `mppx_network`: optional Tempo network override, for example `testnet`.
+- `mppx_rpc_url`: optional Tempo RPC override. Defaults to `mppx` behavior or `MPPX_RPC_URL`.
 - `expected_exit_ip`: the USA VPS public IP.
 
-Do not paste the token into chat or commit it. On the VPN server, read it locally:
+Do not paste private keys into chat or commit them. Manage the payer account with `mppx`:
 
 ```sh
-sudo sed -n 's/^admin_token = "\(.*\)"/\1/p' /etc/vpn-node-daemon/vpn-node.toml
+mppx account create
+mppx account list
 ```
-
-Then put it only in your local `vpn-client.toml`, or export it for one shell:
-
-```sh
-export VPN_CLIENT_ADMIN_TOKEN="..."
-```
-
-Passing secrets as command-line args can expose them to local process listings
-while the command is running. For your own machine this may be acceptable during
-testing; `VPN_CLIENT_ADMIN_TOKEN` is safer.
 
 Run Codex through the USA node:
 
 ```sh
-sudo ./target/debug/vpn-client --admin-token "$VPN_NODE_ADMIN_TOKEN" run --duration 30m -- codex
+sudo ./target/debug/vpn-client run --duration 30m -- codex
 ```
 
 Run a test command:
 
 ```sh
-sudo ./target/debug/vpn-client --admin-token "$VPN_NODE_ADMIN_TOKEN" run --duration 5m -- curl ifconfig.me
+sudo ./target/debug/vpn-client run --duration 5m -- curl ifconfig.me
 ```
 
 Generate a WireGuard client config for a person or device:
 
 ```sh
-cargo run -p vpn-client-cli -- --admin-token "$VPN_NODE_ADMIN_TOKEN" config --duration 30m --output client.conf
+cargo run -p vpn-client-cli -- config \
+  --session-response /tmp/vpn-session.json \
+  --private-key-path /tmp/vpn-client.key \
+  --output client.conf
 ```
 
 The generated config can be imported into the WireGuard app or used with:
@@ -130,8 +136,8 @@ The generated config can be imported into the WireGuard app or used with:
 sudo wg-quick up ./client.conf
 ```
 
-The daemon keeps that peer active until the requested duration expires. To revoke
-it before expiry, call `DELETE /sessions/:session_id` with the printed session ID.
+The daemon keeps that peer active until the requested duration expires. The paid
+client does not revoke or delete server sessions.
 
 Check the active local status from another terminal:
 
@@ -145,7 +151,7 @@ cargo run -p vpn-client-cli -- --config vpn-client.toml status
 - Only the client public key is sent to `vpn-node-daemon`.
 - The SOCKS5 proxy refuses non-loopback bind addresses.
 - If the proxy or WireGuard interface dies, `vpn-client` kills the child process.
-- On normal exit or Ctrl+C, `vpn-client` revokes the daemon session, brings the tunnel down, stops the proxy, removes status, and deletes the temporary config directory.
+- On normal exit or Ctrl+C, `vpn-client` brings the tunnel down, stops the proxy, removes status, and deletes the temporary config directory. The daemon session expires automatically.
 - `vpn-node-daemon` removes peers when sessions expire and removes tracked peers on graceful shutdown.
 
 ## Missing production pieces

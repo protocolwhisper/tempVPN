@@ -17,7 +17,8 @@ That is GCP Iowa, United States.
 - Static public IP.
 - Debian 12 Compute Engine VM.
 - Firewall for WireGuard UDP `51820`.
-- Optional firewall for daemon HTTP API TCP `8080`.
+- Firewall for daemon HTTP API TCP `8080`. Keep this public when buyers need
+  to reach the paid `POST /sessions` endpoint.
 - Optional firewall for SSH TCP `22`.
 - Startup script that installs WireGuard tools, creates `wg0`, enables IP forwarding, adds NAT, generates the server WireGuard keypair, writes `/etc/vpn-node-daemon/vpn-node.toml`, and creates a `vpn-node-daemon` systemd unit.
 
@@ -53,7 +54,7 @@ Edit:
 project_id = "your-gcp-project-id"
 admin_token = "use-a-real-secret"
 ssh_source_ranges = ["YOUR_PUBLIC_IP/32"]
-admin_api_source_ranges = ["YOUR_PUBLIC_IP/32"]
+admin_api_source_ranges = ["0.0.0.0/0"]
 ```
 
 Keep `terraform.tfvars` out of git because it contains the daemon admin token.
@@ -143,7 +144,9 @@ sudo wg show
 
 ## Security Notes
 
-- Restrict `admin_api_source_ranges` to your local public IP. Do not expose the daemon API to the whole internet for this MVP.
+- Keep `admin_api_source_ranges` public only when the paid `POST /sessions`
+  endpoint must be reachable by buyers. Admin session-management routes still
+  require the daemon admin token.
 - Restrict `ssh_source_ranges` to your local public IP.
 - The admin token protects session creation. It is not a WireGuard key.
 - The client private WireGuard key is still generated locally by `vpn-client` and is never sent to the VM.
