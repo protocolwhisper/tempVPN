@@ -1,6 +1,6 @@
 # VPN Node Client MVP
 
-This directory contains a Rust MVP for one managed egress node: `us`.
+This directory contains a Rust MVP for one managed US egress node.
 
 It deliberately does not implement payment or multi-region routing. The target path is:
 
@@ -68,7 +68,7 @@ The shortest path is no config file. Build once, then connect in one command:
 
 ```sh
 cargo build -p vpn-client-cli
-sudo ./target/debug/vpn-client --admin-token "$VPN_NODE_ADMIN_TOKEN" connect --region us --duration 30m
+sudo ./target/debug/vpn-client --admin-token "$VPN_NODE_ADMIN_TOKEN" connect --duration 30m
 ```
 
 Disconnect and revoke the server session:
@@ -108,19 +108,19 @@ testing; `VPN_CLIENT_ADMIN_TOKEN` is safer.
 Run Codex through the USA node:
 
 ```sh
-sudo ./target/debug/vpn-client --admin-token "$VPN_NODE_ADMIN_TOKEN" run --region us --duration 30m -- codex
+sudo ./target/debug/vpn-client --admin-token "$VPN_NODE_ADMIN_TOKEN" run --duration 30m -- codex
 ```
 
 Run a test command:
 
 ```sh
-sudo ./target/debug/vpn-client --admin-token "$VPN_NODE_ADMIN_TOKEN" run --region us --duration 5m -- curl ifconfig.me
+sudo ./target/debug/vpn-client --admin-token "$VPN_NODE_ADMIN_TOKEN" run --duration 5m -- curl ifconfig.me
 ```
 
 Generate a WireGuard client config for a person or device:
 
 ```sh
-cargo run -p vpn-client-cli -- --admin-token "$VPN_NODE_ADMIN_TOKEN" config --region us --duration 30m --output client.conf
+cargo run -p vpn-client-cli -- --admin-token "$VPN_NODE_ADMIN_TOKEN" config --duration 30m --output client.conf
 ```
 
 The generated config can be imported into the WireGuard app or used with:

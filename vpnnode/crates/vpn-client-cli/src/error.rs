@@ -33,9 +33,6 @@ pub enum Error {
     #[error("invalid config: {0}")]
     InvalidConfig(String),
 
-    #[error("MVP only supports --region us")]
-    UnsupportedRegion,
-
     #[error("missing command to run")]
     MissingCommand,
 

@@ -3,3 +3,7 @@ dist/
 out/
 target/
 .env
+vpnnode/vpn-node.toml
+vpnnode/vpn-client.toml
+vpnnode/vpn-node.mock.toml
+vpnnode/client.conf

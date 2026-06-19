@@ -56,8 +56,6 @@ async fn main() -> Result<()> {
 }
 
 async fn run(config: Config, args: cli::RunArgs) -> Result<()> {
-    validate_region(&args.region)?;
-
     let node = NodeClient::new(config.node_url.clone(), config.admin_token.clone());
     let keypair = keygen::generate(&config.wg_command).await?;
     info!("generated ephemeral WireGuard keypair");
@@ -116,7 +114,6 @@ async fn run(config: Config, args: cli::RunArgs) -> Result<()> {
 
         StatusFile {
             session_id: session.session_id.clone(),
-            region: args.region.clone(),
             proxy: proxy_addr,
             tunnel_ip: session.assigned_ip.clone(),
             exit_ip: Some(observed_exit_ip),
@@ -179,8 +176,6 @@ async fn run(config: Config, args: cli::RunArgs) -> Result<()> {
 }
 
 async fn connect(config: Config, args: cli::ConnectArgs) -> Result<()> {
-    validate_region(&args.region)?;
-
     let node = NodeClient::new(config.node_url.clone(), config.admin_token.clone());
     let keypair = keygen::generate(&config.wg_command).await?;
     info!("generated ephemeral WireGuard keypair");
@@ -216,7 +211,6 @@ async fn connect(config: Config, args: cli::ConnectArgs) -> Result<()> {
 
     StatusFile {
         session_id: session.session_id.clone(),
-        region: args.region,
         proxy: config.proxy_addr,
         tunnel_ip: session.assigned_ip.clone(),
         exit_ip: None,
@@ -262,8 +256,6 @@ async fn disconnect(config: Config) -> Result<()> {
 }
 
 async fn generate_config(config: Config, args: cli::ConfigArgs) -> Result<()> {
-    validate_region(&args.region)?;
-
     let node = NodeClient::new(config.node_url.clone(), config.admin_token.clone());
     let keypair = keygen::generate(&config.wg_command).await?;
     let session = node
@@ -299,7 +291,6 @@ async fn print_status(config: Config) -> Result<()> {
     };
 
     println!("Session: {}", status.session_id);
-    println!("Region: {}", status.region);
     println!("Proxy: {}", status.proxy);
     println!("Tunnel IP: {}", status.tunnel_ip.trim_end_matches("/32"));
     println!(
@@ -319,12 +310,4 @@ fn endpoint_host_ip(endpoint: &str) -> Option<String> {
 
 fn default_wireguard_config_path(interface_name: &str) -> PathBuf {
     PathBuf::from(format!("/tmp/{interface_name}.conf"))
-}
-
-fn validate_region(region: &str) -> Result<()> {
-    if region == "us" {
-        Ok(())
-    } else {
-        Err(Error::UnsupportedRegion)
-    }
 }

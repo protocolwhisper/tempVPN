@@ -129,7 +129,7 @@ Run:
 ```sh
 sudo -E cargo run -p vpn-client-cli -- \
   --config vpn-client.toml \
-  run --region us --duration 5m -- curl ifconfig.me
+  run --duration 5m -- curl ifconfig.me
 ```
 
 Expected output is the GCP VM public IP.

@@ -11,7 +11,6 @@ use crate::error::{Error, Result};
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StatusFile {
     pub session_id: String,
-    pub region: String,
     pub proxy: SocketAddr,
     pub tunnel_ip: String,
     pub exit_ip: Option<String>,

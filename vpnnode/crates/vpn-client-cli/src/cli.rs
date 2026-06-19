@@ -28,9 +28,6 @@ pub enum Command {
 
 #[derive(Debug, Args)]
 pub struct RunArgs {
-    #[arg(long, default_value = "us")]
-    pub region: String,
-
     #[arg(long, default_value = "30m", value_parser = parse_duration_seconds)]
     pub duration: u64,
 
@@ -40,9 +37,6 @@ pub struct RunArgs {
 
 #[derive(Debug, Args)]
 pub struct ConnectArgs {
-    #[arg(long, default_value = "us")]
-    pub region: String,
-
     #[arg(long, default_value = "30m", value_parser = parse_duration_seconds)]
     pub duration: u64,
 
@@ -55,9 +49,6 @@ pub struct ConnectArgs {
 
 #[derive(Debug, Args)]
 pub struct ConfigArgs {
-    #[arg(long, default_value = "us")]
-    pub region: String,
-
     #[arg(long, default_value = "30m", value_parser = parse_duration_seconds)]
     pub duration: u64,
 
