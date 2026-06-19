@@ -10,6 +10,9 @@ pub struct Cli {
     #[arg(long)]
     pub config: Option<PathBuf>,
 
+    #[arg(long)]
+    pub admin_token: Option<String>,
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -17,6 +20,8 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     Run(RunArgs),
+    Connect(ConnectArgs),
+    Disconnect,
     Config(ConfigArgs),
     Status,
 }
@@ -31,6 +36,21 @@ pub struct RunArgs {
 
     #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
     pub command: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct ConnectArgs {
+    #[arg(long, default_value = "us")]
+    pub region: String,
+
+    #[arg(long, default_value = "30m", value_parser = parse_duration_seconds)]
+    pub duration: u64,
+
+    #[arg(long)]
+    pub config_path: Option<PathBuf>,
+
+    #[arg(long, default_value = "0.0.0.0/0, ::/0")]
+    pub allowed_ips: String,
 }
 
 #[derive(Debug, Args)]

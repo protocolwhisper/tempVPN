@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use tempfile::TempDir;
-use tokio::{fs, process::Command};
+use tokio::{fs, io::AsyncWriteExt, process::Command};
 use tracing::info;
 
 use crate::{
@@ -91,6 +91,47 @@ impl WireGuardTunnel {
     }
 }
 
+pub async fn up_config(wg_quick_command: &str, config_path: &Path) -> Result<()> {
+    let output = Command::new(wg_quick_command)
+        .arg("up")
+        .arg(config_path)
+        .output()
+        .await
+        .map_err(Error::Io)?;
+    if !output.status.success() {
+        return Err(Error::CommandFailed {
+            program: format!("{wg_quick_command} up {}", config_path.display()),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        });
+    }
+    Ok(())
+}
+
+pub async fn down_config(wg_quick_command: &str, config_path: &Path) -> Result<()> {
+    let output = Command::new(wg_quick_command)
+        .arg("down")
+        .arg(config_path)
+        .output()
+        .await
+        .map_err(Error::Io)?;
+    if !output.status.success() {
+        return Err(Error::CommandFailed {
+            program: format!("{wg_quick_command} down {}", config_path.display()),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        });
+    }
+    Ok(())
+}
+
+pub async fn interface_is_active(wg_command: &str, interface_name: &str) -> bool {
+    Command::new(wg_command)
+        .args(["show", interface_name])
+        .output()
+        .await
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
 pub async fn write_config(
     path: &Path,
     keypair: &Keypair,
@@ -98,6 +139,27 @@ pub async fn write_config(
     allowed_ips: &str,
 ) -> Result<()> {
     Ok(fs::write(path, render_config(keypair, session, allowed_ips)).await?)
+}
+
+pub async fn write_config_private(
+    path: &Path,
+    keypair: &Keypair,
+    session: &Session,
+    allowed_ips: &str,
+) -> Result<()> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+
+    #[cfg(unix)]
+    {
+        options.mode(0o600);
+    }
+
+    let mut file = options.open(path).await?;
+    file.write_all(render_config(keypair, session, allowed_ips).as_bytes())
+        .await?;
+    file.flush().await?;
+    Ok(())
 }
 
 pub fn render_config(keypair: &Keypair, session: &Session, allowed_ips: &str) -> String {

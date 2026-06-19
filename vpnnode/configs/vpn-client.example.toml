@@ -1,6 +1,7 @@
-# Copy locally and keep the admin token secret.
-node_url = "https://USA_VPS_IP:8080"
-admin_token = "change-me"
+# Copy locally for optional overrides. The node URL and expected exit IP default
+# to the current GCP node, and the admin token can be passed with --admin-token.
+node_url = "http://USA_VPS_IP:8080"
+# admin_token = "change-me"
 proxy_addr = "127.0.0.1:1080"
 status_file = "/tmp/vpn-client-status.json"
 wg_quick_command = "wg-quick"
