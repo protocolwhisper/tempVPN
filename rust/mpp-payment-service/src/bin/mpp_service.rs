@@ -10,7 +10,7 @@ use std::{
 use tokio::net::TcpListener;
 
 const DEFAULT_PORT: u16 = 3000;
-const DEFAULT_HOST: &str = "127.0.0.1";
+const DEFAULT_HOST: &str = "0.0.0.0";
 const DEFAULT_REALM: &str = "localhost:3000";
 const DEFAULT_RPC_URL: &str = "https://rpc.moderato.tempo.xyz";
 const DEFAULT_CURRENCY: &str = "0x20c0000000000000000000000000000000000000";
