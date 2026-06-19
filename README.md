@@ -16,5 +16,5 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The `Release VPN client` workflow uploads Linux, macOS, and Windows archives plus
-`SHA256SUMS` to the GitHub Release for that tag.
+The `Release VPN client` workflow uploads Linux musl, macOS, and Windows archives
+plus `SHA256SUMS` to the GitHub Release for that tag.
