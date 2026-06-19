@@ -26,6 +26,9 @@ pub enum Error {
     #[error("invalid config: {0}")]
     InvalidConfig(String),
 
+    #[error("mpp setup failed: {0}")]
+    Mpp(String),
+
     #[error("invalid request: {0}")]
     InvalidRequest(String),
 

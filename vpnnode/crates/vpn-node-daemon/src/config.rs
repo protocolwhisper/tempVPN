@@ -5,6 +5,11 @@ use serde::Deserialize;
 
 use crate::error::{Error, Result};
 
+const DEFAULT_MPP_RPC_URL: &str = "https://rpc.moderato.tempo.xyz";
+const DEFAULT_MPP_REALM: &str = "localhost:8080";
+const DEFAULT_MPP_PAYMENT_CURRENCY: &str = "0x20c0000000000000000000000000000000000000";
+const DEFAULT_MPP_PAYMENT_RECIPIENT: &str = "0xB01E80a8CD7C72589f30D2004aeb60937a2150d3";
+
 #[derive(Debug, Parser)]
 pub struct Args {
     #[arg(long)]
@@ -24,6 +29,10 @@ pub struct Config {
     pub sweep_interval_seconds: u64,
     pub cleanup_on_shutdown: bool,
     pub mock_wg: bool,
+    pub mpp_rpc_url: String,
+    pub mpp_realm: String,
+    pub mpp_payment_currency: String,
+    pub mpp_payment_recipient: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -39,6 +48,10 @@ struct FileConfig {
     sweep_interval_seconds: Option<u64>,
     cleanup_on_shutdown: Option<bool>,
     mock_wg: Option<bool>,
+    mpp_rpc_url: Option<String>,
+    mpp_realm: Option<String>,
+    mpp_payment_currency: Option<String>,
+    mpp_payment_recipient: Option<String>,
 }
 
 impl Config {
@@ -82,6 +95,22 @@ impl Config {
             "true",
         )?;
         let mock_wg = env_or("VPN_NODE_MOCK_WG", file.mock_wg, "false")?;
+        let mpp_rpc_url = env_or_default(
+            "VPN_NODE_MPP_RPC_URL",
+            file.mpp_rpc_url,
+            DEFAULT_MPP_RPC_URL,
+        );
+        let mpp_realm = env_or_default("VPN_NODE_MPP_REALM", file.mpp_realm, DEFAULT_MPP_REALM);
+        let mpp_payment_currency = env_or_default(
+            "VPN_NODE_MPP_PAYMENT_CURRENCY",
+            file.mpp_payment_currency,
+            DEFAULT_MPP_PAYMENT_CURRENCY,
+        );
+        let mpp_payment_recipient = env_or_default(
+            "VPN_NODE_MPP_PAYMENT_RECIPIENT",
+            file.mpp_payment_recipient,
+            DEFAULT_MPP_PAYMENT_RECIPIENT,
+        );
 
         Ok(Self {
             bind_addr,
@@ -95,6 +124,10 @@ impl Config {
             sweep_interval_seconds,
             cleanup_on_shutdown,
             mock_wg,
+            mpp_rpc_url,
+            mpp_realm,
+            mpp_payment_currency,
+            mpp_payment_recipient,
         })
     }
 }

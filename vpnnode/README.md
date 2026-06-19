@@ -2,7 +2,7 @@
 
 This directory contains a Rust MVP for one managed US egress node.
 
-It deliberately does not implement payment or multi-region routing. The target path is:
+The target path is:
 
 ```text
 Client/Codex -> 127.0.0.1:1080 SOCKS5 proxy -> WireGuard tunnel -> USA VPS -> internet
@@ -36,6 +36,7 @@ Set these values:
 - `server_public_key`: public key for the VPS WireGuard interface.
 - `endpoint`: `USA_VPS_IP:51820`.
 - `wg_interface`: usually `wg0`.
+- `mpp_payment_recipient`: payment recipient for paid session creation. The example defaults to `0xB01E80a8CD7C72589f30D2004aeb60937a2150d3`.
 
 Run:
 
@@ -52,7 +53,7 @@ DELETE /sessions/:session_id
 GET /health
 ```
 
-Use `Authorization: Bearer <admin_token>` or `X-Admin-Token: <admin_token>` for session endpoints.
+`POST /sessions` is MPP-protected and returns `402 Payment Required` until the request includes a valid Tempo MPP receipt. Use `Authorization: Bearer <admin_token>` or `X-Admin-Token: <admin_token>` for the `GET` and `DELETE` session management endpoints.
 
 ## Local VPN client
 
@@ -152,5 +153,4 @@ cargo run -p vpn-client-cli -- --config vpn-client.toml status
 - Persistent session store for crash recovery.
 - TLS termination for the daemon if it is exposed directly.
 - Systemd unit files and hardened Linux firewall rules.
-- Payment/MPP integration.
 - Multi-region routing.

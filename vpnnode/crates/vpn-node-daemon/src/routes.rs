@@ -7,15 +7,37 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use mpp::server::axum::{ChargeChallenger, ChargeConfig, MppCharge};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::{config::Config, sessions::Sessions};
 
+const VPN_SESSION_PRICE_AMOUNT: &str = "0.01";
+
 #[derive(Clone)]
 pub struct AppState {
     pub config: Config,
     pub sessions: Arc<Sessions>,
+    pub challenger: Arc<dyn ChargeChallenger>,
+}
+
+impl axum::extract::FromRef<AppState> for Arc<dyn ChargeChallenger> {
+    fn from_ref(state: &AppState) -> Self {
+        state.challenger.clone()
+    }
+}
+
+struct VpnSessionCharge;
+
+impl ChargeConfig for VpnSessionCharge {
+    fn amount() -> &'static str {
+        VPN_SESSION_PRICE_AMOUNT
+    }
+
+    fn description() -> Option<&'static str> {
+        Some("Temporary WireGuard VPN session")
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -50,13 +72,9 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
 
 async fn create_session(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    _charge: MppCharge<VpnSessionCharge>,
     Json(request): Json<CreateSessionRequest>,
 ) -> Response {
-    if let Err(response) = authorize(&state.config, &headers) {
-        return response;
-    }
-
     match state
         .sessions
         .create(request.client_public_key, request.duration_seconds)

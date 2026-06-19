@@ -10,3 +10,7 @@ max_duration_seconds = 3600
 sweep_interval_seconds = 10
 cleanup_on_shutdown = true
 mock_wg = false
+mpp_rpc_url = "https://rpc.moderato.tempo.xyz"
+mpp_realm = "localhost:8080"
+mpp_payment_currency = "0x20c0000000000000000000000000000000000000"
+mpp_payment_recipient = "0xB01E80a8CD7C72589f30D2004aeb60937a2150d3"
