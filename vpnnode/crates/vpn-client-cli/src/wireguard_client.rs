@@ -57,12 +57,7 @@ impl WireGuardTunnel {
     }
 
     pub async fn is_active(&self) -> bool {
-        Command::new(&self.wg_command)
-            .args(["show", &self.interface_name])
-            .output()
-            .await
-            .map(|output| output.status.success())
-            .unwrap_or(false)
+        interface_is_active(&self.wg_command, &self.interface_name).await
     }
 
     pub async fn down(&self) -> Result<()> {
@@ -124,6 +119,21 @@ pub async fn down_config(wg_quick_command: &str, config_path: &Path) -> Result<(
 }
 
 pub async fn interface_is_active(wg_command: &str, interface_name: &str) -> bool {
+    if wg_show_succeeds(wg_command, interface_name).await {
+        return true;
+    }
+
+    // On macOS, wg-quick creates a utun device and records the mapping from
+    // the requested interface name to the real interface here.
+    let mapped_name_path = PathBuf::from(format!("/var/run/wireguard/{interface_name}.name"));
+    let Ok(real_interface) = fs::read_to_string(mapped_name_path).await else {
+        return false;
+    };
+    let real_interface = real_interface.trim();
+    !real_interface.is_empty() && wg_show_succeeds(wg_command, real_interface).await
+}
+
+async fn wg_show_succeeds(wg_command: &str, interface_name: &str) -> bool {
     Command::new(wg_command)
         .args(["show", interface_name])
         .output()
