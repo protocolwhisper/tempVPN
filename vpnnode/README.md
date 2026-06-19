@@ -56,34 +56,71 @@ Use `Authorization: Bearer <admin_token>` or `X-Admin-Token: <admin_token>` for 
 
 ## Local VPN client
 
-Create a local config:
+The client machine needs:
+
+- Rust/Cargo to build `vpn-client`.
+- WireGuard tools on `PATH`: `wg` and `wg-quick`.
+- Permission to create a WireGuard interface, so tunnel commands usually run with `sudo`.
+- Network access to the node API. For now the Rust client defaults to `http://34.30.107.52:8080`.
+- The daemon admin token, provided with `--admin-token`, `VPN_CLIENT_ADMIN_TOKEN`, or a local config file.
+
+The shortest path is no config file. Build once, then connect in one command:
+
+```sh
+cargo build -p vpn-client-cli
+sudo ./target/debug/vpn-client --admin-token "$VPN_NODE_ADMIN_TOKEN" connect --region us --duration 30m
+```
+
+Disconnect and revoke the server session:
+
+```sh
+sudo ./target/debug/vpn-client --admin-token "$VPN_NODE_ADMIN_TOKEN" disconnect
+```
+
+You can also create a local config for overrides:
 
 ```sh
 cp configs/vpn-client.example.toml vpn-client.toml
 ```
 
-Set:
+Optional values:
 
-- `node_url`: the daemon URL.
-- `admin_token`: the daemon admin token.
+- `node_url`: the daemon URL, for example `http://34.30.107.52:8080`.
+- `admin_token`: the daemon admin token. Prefer `--admin-token` or `VPN_CLIENT_ADMIN_TOKEN`.
 - `expected_exit_ip`: the USA VPS public IP.
+
+Do not paste the token into chat or commit it. On the VPN server, read it locally:
+
+```sh
+sudo sed -n 's/^admin_token = "\(.*\)"/\1/p' /etc/vpn-node-daemon/vpn-node.toml
+```
+
+Then put it only in your local `vpn-client.toml`, or export it for one shell:
+
+```sh
+export VPN_CLIENT_ADMIN_TOKEN="..."
+```
+
+Passing secrets as command-line args can expose them to local process listings
+while the command is running. For your own machine this may be acceptable during
+testing; `VPN_CLIENT_ADMIN_TOKEN` is safer.
 
 Run Codex through the USA node:
 
 ```sh
-sudo -E cargo run -p vpn-client-cli -- --config vpn-client.toml run --region us --duration 30m -- codex
+sudo ./target/debug/vpn-client --admin-token "$VPN_NODE_ADMIN_TOKEN" run --region us --duration 30m -- codex
 ```
 
 Run a test command:
 
 ```sh
-sudo -E cargo run -p vpn-client-cli -- --config vpn-client.toml run --region us --duration 5m -- curl ifconfig.me
+sudo ./target/debug/vpn-client --admin-token "$VPN_NODE_ADMIN_TOKEN" run --region us --duration 5m -- curl ifconfig.me
 ```
 
 Generate a WireGuard client config for a person or device:
 
 ```sh
-cargo run -p vpn-client-cli -- --config vpn-client.toml config --region us --duration 30m --output client.conf
+cargo run -p vpn-client-cli -- --admin-token "$VPN_NODE_ADMIN_TOKEN" config --region us --duration 30m --output client.conf
 ```
 
 The generated config can be imported into the WireGuard app or used with:

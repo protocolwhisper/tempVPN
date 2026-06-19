@@ -1,4 +1,7 @@
-use std::{net::SocketAddr, path::Path};
+use std::{
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -13,6 +16,7 @@ pub struct StatusFile {
     pub tunnel_ip: String,
     pub exit_ip: Option<String>,
     pub interface_name: String,
+    pub config_path: Option<PathBuf>,
     pub expires_at: DateTime<Utc>,
 }
 

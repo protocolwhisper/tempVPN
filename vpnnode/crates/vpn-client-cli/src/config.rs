@@ -4,6 +4,9 @@ use serde::Deserialize;
 
 use crate::error::{Error, Result};
 
+const DEFAULT_NODE_URL: &str = "http://34.30.107.52:8080";
+const DEFAULT_EXPECTED_EXIT_IP: &str = "34.30.107.52";
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub node_url: String,
@@ -28,8 +31,13 @@ struct FileConfig {
     expected_exit_ip: Option<String>,
 }
 
+#[derive(Debug, Default)]
+pub struct Overrides {
+    pub admin_token: Option<String>,
+}
+
 impl Config {
-    pub async fn load(path: Option<PathBuf>) -> Result<Self> {
+    pub async fn load(path: Option<PathBuf>, overrides: Overrides) -> Result<Self> {
         let file = match path {
             Some(path) => {
                 let contents =
@@ -51,8 +59,12 @@ impl Config {
         }
 
         Ok(Self {
-            node_url: env_or_required("VPN_CLIENT_NODE_URL", file.node_url)?,
-            admin_token: env_or_required("VPN_CLIENT_ADMIN_TOKEN", file.admin_token)?,
+            node_url: env_or_default("VPN_CLIENT_NODE_URL", file.node_url, DEFAULT_NODE_URL),
+            admin_token: override_env_or_required(
+                overrides.admin_token,
+                "VPN_CLIENT_ADMIN_TOKEN",
+                file.admin_token,
+            )?,
             proxy_addr,
             status_file: env_or(
                 "VPN_CLIENT_STATUS_FILE",
@@ -73,12 +85,20 @@ impl Config {
             expected_exit_ip: env::var("VPN_CLIENT_EXPECTED_EXIT_IP")
                 .ok()
                 .filter(|value| !value.is_empty())
-                .or(file.expected_exit_ip),
+                .or(file.expected_exit_ip)
+                .or_else(|| Some(DEFAULT_EXPECTED_EXIT_IP.to_string())),
         })
     }
 }
 
-fn env_or_required(name: &'static str, value: Option<String>) -> Result<String> {
+fn override_env_or_required(
+    override_value: Option<String>,
+    name: &'static str,
+    value: Option<String>,
+) -> Result<String> {
+    if let Some(value) = override_value.filter(|value| !value.is_empty()) {
+        return Ok(value);
+    }
     if let Ok(value) = env::var(name) {
         if !value.is_empty() {
             return Ok(value);

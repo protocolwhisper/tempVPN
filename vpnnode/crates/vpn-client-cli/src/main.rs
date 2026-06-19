@@ -9,6 +9,8 @@ mod proxy;
 mod status;
 mod wireguard_client;
 
+use std::path::PathBuf;
+
 use chrono::Utc;
 use clap::Parser;
 use tokio::fs;
@@ -17,7 +19,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::{
     cli::{Cli, Command},
-    config::Config,
+    config::{Config, Overrides},
     error::{Error, Result},
     node_client::NodeClient,
     process::{run_child_with_kill_switch, RunOutcome},
@@ -36,10 +38,18 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let config = Config::load(cli.config).await?;
+    let config = Config::load(
+        cli.config,
+        Overrides {
+            admin_token: cli.admin_token,
+        },
+    )
+    .await?;
 
     match cli.command {
         Command::Run(args) => run(config, args).await,
+        Command::Connect(args) => connect(config, args).await,
+        Command::Disconnect => disconnect(config).await,
         Command::Config(args) => generate_config(config, args).await,
         Command::Status => print_status(config).await,
     }
@@ -111,6 +121,7 @@ async fn run(config: Config, args: cli::RunArgs) -> Result<()> {
             tunnel_ip: session.assigned_ip.clone(),
             exit_ip: Some(observed_exit_ip),
             interface_name: config.interface_name.clone(),
+            config_path: None,
             expires_at: session.expires_at,
         }
         .write(&config.status_file)
@@ -164,6 +175,89 @@ async fn run(config: Config, args: cli::RunArgs) -> Result<()> {
         std::process::exit(child_code);
     }
     let _ = exit_ip;
+    Ok(())
+}
+
+async fn connect(config: Config, args: cli::ConnectArgs) -> Result<()> {
+    validate_region(&args.region)?;
+
+    let node = NodeClient::new(config.node_url.clone(), config.admin_token.clone());
+    let keypair = keygen::generate(&config.wg_command).await?;
+    info!("generated ephemeral WireGuard keypair");
+
+    let session = node
+        .create_session(&keypair.public_key, args.duration)
+        .await?;
+    info!(
+        session_id = session.session_id,
+        assigned_ip = session.assigned_ip,
+        endpoint = session.endpoint,
+        "created VPN session"
+    );
+
+    let config_path = args
+        .config_path
+        .unwrap_or_else(|| default_wireguard_config_path(&config.interface_name));
+    wireguard_client::write_config_private(&config_path, &keypair, &session, &args.allowed_ips)
+        .await?;
+
+    if let Err(err) = wireguard_client::up_config(&config.wg_quick_command, &config_path).await {
+        let _ = node.revoke_session(&session.session_id).await;
+        let _ = fs::remove_file(&config_path).await;
+        return Err(err);
+    }
+
+    if !wireguard_client::interface_is_active(&config.wg_command, &config.interface_name).await {
+        let _ = node.revoke_session(&session.session_id).await;
+        let _ = wireguard_client::down_config(&config.wg_quick_command, &config_path).await;
+        let _ = fs::remove_file(&config_path).await;
+        return Err(Error::TunnelInactive(config.interface_name));
+    }
+
+    StatusFile {
+        session_id: session.session_id.clone(),
+        region: args.region,
+        proxy: config.proxy_addr,
+        tunnel_ip: session.assigned_ip.clone(),
+        exit_ip: None,
+        interface_name: config.interface_name.clone(),
+        config_path: Some(config_path.clone()),
+        expires_at: session.expires_at,
+    }
+    .write(&config.status_file)
+    .await?;
+
+    println!("Connected: {}", config.interface_name);
+    println!("Session: {}", session.session_id);
+    println!(
+        "Assigned IP: {}",
+        session.assigned_ip.trim_end_matches("/32")
+    );
+    println!("Config: {}", config_path.display());
+    println!("Expires at: {}", session.expires_at);
+    Ok(())
+}
+
+async fn disconnect(config: Config) -> Result<()> {
+    let status = status::read(&config.status_file).await?;
+    let node = NodeClient::new(config.node_url.clone(), config.admin_token.clone());
+
+    if let Some(config_path) = &status.config_path {
+        wireguard_client::down_config(&config.wg_quick_command, config_path).await?;
+        let _ = fs::remove_file(config_path).await;
+    } else {
+        let path = default_wireguard_config_path(&status.interface_name);
+        wireguard_client::down_config(&config.wg_quick_command, &path).await?;
+    }
+
+    if let Err(err) = node.revoke_session(&status.session_id).await {
+        warn!(error = %err, "failed to revoke VPN session");
+    } else {
+        info!(session_id = status.session_id, "revoked VPN session");
+    }
+
+    status::remove(&config.status_file).await;
+    println!("Disconnected: {}", status.interface_name);
     Ok(())
 }
 
@@ -221,6 +315,10 @@ fn endpoint_host_ip(endpoint: &str) -> Option<String> {
     let (host, _) = endpoint.rsplit_once(':')?;
     host.parse::<std::net::IpAddr>().ok()?;
     Some(host.to_string())
+}
+
+fn default_wireguard_config_path(interface_name: &str) -> PathBuf {
+    PathBuf::from(format!("/tmp/{interface_name}.conf"))
 }
 
 fn validate_region(region: &str) -> Result<()> {
