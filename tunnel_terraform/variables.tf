@@ -102,7 +102,7 @@ variable "sweep_interval_seconds" {
 variable "network_name" {
   description = "Name of the VPC to create."
   type        = string
-  default     = "agent-egress-vpc"
+  default     = "vpn-client-vpc"
 }
 
 variable "subnet_cidr" {

@@ -224,7 +224,7 @@ fn endpoint_host_ip(endpoint: &str) -> Option<String> {
 }
 
 fn validate_region(region: &str) -> Result<()> {
-    if region == "germany" {
+    if region == "us" {
         Ok(())
     } else {
         Err(Error::UnsupportedRegion)

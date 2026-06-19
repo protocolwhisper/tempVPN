@@ -1,6 +1,6 @@
 locals {
   tags = [
-    "agent-egress",
+    "vpn-client",
     "wireguard",
     "vpn-node-daemon",
   ]

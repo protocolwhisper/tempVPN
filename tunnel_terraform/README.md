@@ -111,24 +111,24 @@ The daemon config already uses that key at:
 
 ## Local Client Test
 
-In `../vpnnode`, create `agent-egress.toml`:
+In `../vpnnode`, create `vpn-client.toml`:
 
 ```toml
 node_url = "http://GCP_PUBLIC_IP:8080"
 admin_token = "same-admin-token"
 proxy_addr = "127.0.0.1:1080"
-status_file = "/tmp/agent-egress-status.json"
+status_file = "/tmp/vpn-client-status.json"
 wg_quick_command = "wg-quick"
 wg_command = "wg"
-interface_name = "aegress0"
+interface_name = "vpnclient0"
 expected_exit_ip = "GCP_PUBLIC_IP"
 ```
 
 Run:
 
 ```sh
-sudo -E cargo run -p agent-egress-cli -- \
-  --config agent-egress.toml \
+sudo -E cargo run -p vpn-client-cli -- \
+  --config vpn-client.toml \
   run --region us --duration 5m -- curl ifconfig.me
 ```
 
@@ -146,7 +146,7 @@ sudo wg show
 - Restrict `admin_api_source_ranges` to your local public IP. Do not expose the daemon API to the whole internet for this MVP.
 - Restrict `ssh_source_ranges` to your local public IP.
 - The admin token protects session creation. It is not a WireGuard key.
-- The client private WireGuard key is still generated locally by `agent-egress` and is never sent to the VM.
+- The client private WireGuard key is still generated locally by `vpn-client` and is never sent to the VM.
 - This is not a payment layer yet.
 
 ## Destroy

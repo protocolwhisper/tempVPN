@@ -1,16 +1,16 @@
 # VPN Node Client MVP
 
-This directory contains a Rust MVP for one managed egress node: `germany`.
+This directory contains a Rust MVP for one managed egress node: `us`.
 
 It deliberately does not implement payment or multi-region routing. The target path is:
 
 ```text
-Client/Codex -> 127.0.0.1:1080 SOCKS5 proxy -> WireGuard tunnel -> Germany VPS -> internet
+Client/Codex -> 127.0.0.1:1080 SOCKS5 proxy -> WireGuard tunnel -> USA VPS -> internet
 ```
 
 ## Binaries
 
-- `vpn-node-daemon`: runs on the Germany VPS and grants temporary WireGuard peers through an admin-token protected HTTP API.
+- `vpn-node-daemon`: runs on the USA VPS and grants temporary WireGuard peers through an admin-token protected HTTP API.
 - `vpn-client`: runs locally, requests a temporary session, starts a WireGuard tunnel, starts a loopback-only SOCKS5 proxy, and launches the child command with proxy env vars.
 
 ## Build
@@ -20,7 +20,7 @@ cd vpnnode
 cargo build
 ```
 
-## Germany VPS setup
+## USA VPS setup
 
 Install WireGuard and configure `wg0` with `configs/wg-server.example.conf` as a starting point. Enable forwarding and NAT on the VPS.
 
@@ -34,7 +34,7 @@ Set these values:
 
 - `admin_token`: a secret token shared only with trusted clients.
 - `server_public_key`: public key for the VPS WireGuard interface.
-- `endpoint`: `GERMANY_VPS_IP:51820`.
+- `endpoint`: `USA_VPS_IP:51820`.
 - `wg_interface`: usually `wg0`.
 
 Run:
@@ -66,24 +66,24 @@ Set:
 
 - `node_url`: the daemon URL.
 - `admin_token`: the daemon admin token.
-- `expected_exit_ip`: the Germany VPS public IP.
+- `expected_exit_ip`: the USA VPS public IP.
 
-Run Codex through the Germany node:
+Run Codex through the USA node:
 
 ```sh
-sudo -E cargo run -p vpn-client-cli -- --config vpn-client.toml run --region germany --duration 30m -- codex
+sudo -E cargo run -p vpn-client-cli -- --config vpn-client.toml run --region us --duration 30m -- codex
 ```
 
 Run a test command:
 
 ```sh
-sudo -E cargo run -p vpn-client-cli -- --config vpn-client.toml run --region germany --duration 5m -- curl ifconfig.me
+sudo -E cargo run -p vpn-client-cli -- --config vpn-client.toml run --region us --duration 5m -- curl ifconfig.me
 ```
 
 Generate a WireGuard client config for a person or device:
 
 ```sh
-cargo run -p vpn-client-cli -- --config vpn-client.toml config --region germany --duration 30m --output client.conf
+cargo run -p vpn-client-cli -- --config vpn-client.toml config --region us --duration 30m --output client.conf
 ```
 
 The generated config can be imported into the WireGuard app or used with:
