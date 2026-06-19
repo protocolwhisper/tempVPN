@@ -11,6 +11,7 @@ mod wireguard_client;
 
 use chrono::Utc;
 use clap::Parser;
+use tokio::fs;
 use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -29,7 +30,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "agent_egress=info".into()),
+                .unwrap_or_else(|_| "vpn_client=info".into()),
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
@@ -39,14 +40,13 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::Run(args) => run(config, args).await,
+        Command::Config(args) => generate_config(config, args).await,
         Command::Status => print_status(config).await,
     }
 }
 
 async fn run(config: Config, args: cli::RunArgs) -> Result<()> {
-    if args.region != "us" {
-        return Err(Error::UnsupportedRegion);
-    }
+    validate_region(&args.region)?;
 
     let node = NodeClient::new(config.node_url.clone(), config.admin_token.clone());
     let keypair = keygen::generate(&config.wg_command).await?;
@@ -167,6 +167,32 @@ async fn run(config: Config, args: cli::RunArgs) -> Result<()> {
     Ok(())
 }
 
+async fn generate_config(config: Config, args: cli::ConfigArgs) -> Result<()> {
+    validate_region(&args.region)?;
+
+    let node = NodeClient::new(config.node_url.clone(), config.admin_token.clone());
+    let keypair = keygen::generate(&config.wg_command).await?;
+    let session = node
+        .create_session(&keypair.public_key, args.duration)
+        .await?;
+    let wg_config = wireguard_client::render_config(&keypair, &session, &args.allowed_ips);
+
+    if let Some(path) = args.output {
+        fs::write(&path, wg_config).await?;
+        println!("Wrote WireGuard config: {}", path.display());
+        println!("Session: {}", session.session_id);
+        println!(
+            "Assigned IP: {}",
+            session.assigned_ip.trim_end_matches("/32")
+        );
+        println!("Expires at: {}", session.expires_at);
+    } else {
+        print!("{wg_config}");
+    }
+
+    Ok(())
+}
+
 async fn print_status(config: Config) -> Result<()> {
     let status = status::read(&config.status_file).await?;
     let remaining = status.expires_at - Utc::now();
@@ -195,4 +221,12 @@ fn endpoint_host_ip(endpoint: &str) -> Option<String> {
     let (host, _) = endpoint.rsplit_once(':')?;
     host.parse::<std::net::IpAddr>().ok()?;
     Some(host.to_string())
+}
+
+fn validate_region(region: &str) -> Result<()> {
+    if region == "germany" {
+        Ok(())
+    } else {
+        Err(Error::UnsupportedRegion)
+    }
 }

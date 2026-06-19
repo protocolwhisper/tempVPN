@@ -1,7 +1,7 @@
 [workspace]
 members = [
     "crates/vpn-node-daemon",
-    "crates/agent-egress-cli",
+    "crates/vpn-client-cli",
 ]
 resolver = "2"
 

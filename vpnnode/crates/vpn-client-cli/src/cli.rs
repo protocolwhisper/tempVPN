@@ -5,7 +5,7 @@ use clap::{Args, Parser, Subcommand};
 use crate::error::{Error, Result};
 
 #[derive(Debug, Parser)]
-#[command(name = "agent-egress")]
+#[command(name = "vpn-client")]
 pub struct Cli {
     #[arg(long)]
     pub config: Option<PathBuf>,
@@ -17,12 +17,13 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     Run(RunArgs),
+    Config(ConfigArgs),
     Status,
 }
 
 #[derive(Debug, Args)]
 pub struct RunArgs {
-    #[arg(long, default_value = "us")]
+    #[arg(long, default_value = "germany")]
     pub region: String,
 
     #[arg(long, default_value = "30m", value_parser = parse_duration_seconds)]
@@ -30,6 +31,21 @@ pub struct RunArgs {
 
     #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
     pub command: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct ConfigArgs {
+    #[arg(long, default_value = "germany")]
+    pub region: String,
+
+    #[arg(long, default_value = "30m", value_parser = parse_duration_seconds)]
+    pub duration: u64,
+
+    #[arg(long)]
+    pub output: Option<PathBuf>,
+
+    #[arg(long, default_value = "0.0.0.0/0, ::/0")]
+    pub allowed_ips: String,
 }
 
 fn parse_duration_seconds(raw: &str) -> Result<u64> {

@@ -45,32 +45,32 @@ impl Config {
             None => FileConfig::default(),
         };
 
-        let proxy_addr = env_or("AGENT_EGRESS_PROXY_ADDR", file.proxy_addr, "127.0.0.1:1080")?;
+        let proxy_addr = env_or("VPN_CLIENT_PROXY_ADDR", file.proxy_addr, "127.0.0.1:1080")?;
         if !proxy_addr.ip().is_loopback() {
             return Err(Error::ProxyMustBeLoopback(proxy_addr));
         }
 
         Ok(Self {
-            node_url: env_or_required("AGENT_EGRESS_NODE_URL", file.node_url)?,
-            admin_token: env_or_required("AGENT_EGRESS_ADMIN_TOKEN", file.admin_token)?,
+            node_url: env_or_required("VPN_CLIENT_NODE_URL", file.node_url)?,
+            admin_token: env_or_required("VPN_CLIENT_ADMIN_TOKEN", file.admin_token)?,
             proxy_addr,
             status_file: env_or(
-                "AGENT_EGRESS_STATUS_FILE",
+                "VPN_CLIENT_STATUS_FILE",
                 file.status_file,
-                "/tmp/agent-egress-status.json",
+                "/tmp/vpn-client-status.json",
             )?,
             wg_quick_command: env_or_default(
-                "AGENT_EGRESS_WG_QUICK_COMMAND",
+                "VPN_CLIENT_WG_QUICK_COMMAND",
                 file.wg_quick_command,
                 "wg-quick",
             ),
-            wg_command: env_or_default("AGENT_EGRESS_WG_COMMAND", file.wg_command, "wg"),
+            wg_command: env_or_default("VPN_CLIENT_WG_COMMAND", file.wg_command, "wg"),
             interface_name: env_or_default(
-                "AGENT_EGRESS_INTERFACE_NAME",
+                "VPN_CLIENT_INTERFACE_NAME",
                 file.interface_name,
-                "aegress0",
+                "vpnclient0",
             ),
-            expected_exit_ip: env::var("AGENT_EGRESS_EXPECTED_EXIT_IP")
+            expected_exit_ip: env::var("VPN_CLIENT_EXPECTED_EXIT_IP")
                 .ok()
                 .filter(|value| !value.is_empty())
                 .or(file.expected_exit_ip),

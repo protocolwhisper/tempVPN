@@ -1,17 +1,17 @@
-# VPN Node Agent Egress MVP
+# VPN Node Client MVP
 
 This directory contains a Rust MVP for one managed egress node: `germany`.
 
 It deliberately does not implement payment or multi-region routing. The target path is:
 
 ```text
-Agent/Codex -> 127.0.0.1:1080 SOCKS5 proxy -> WireGuard tunnel -> Germany VPS -> internet
+Client/Codex -> 127.0.0.1:1080 SOCKS5 proxy -> WireGuard tunnel -> Germany VPS -> internet
 ```
 
 ## Binaries
 
 - `vpn-node-daemon`: runs on the Germany VPS and grants temporary WireGuard peers through an admin-token protected HTTP API.
-- `agent-egress`: runs locally, requests a temporary session, starts a WireGuard tunnel, starts a loopback-only SOCKS5 proxy, and launches the child command with proxy env vars.
+- `vpn-client`: runs locally, requests a temporary session, starts a WireGuard tunnel, starts a loopback-only SOCKS5 proxy, and launches the child command with proxy env vars.
 
 ## Build
 
@@ -54,12 +54,12 @@ GET /health
 
 Use `Authorization: Bearer <admin_token>` or `X-Admin-Token: <admin_token>` for session endpoints.
 
-## Local agent egress
+## Local VPN client
 
 Create a local config:
 
 ```sh
-cp configs/agent-egress.example.toml agent-egress.toml
+cp configs/vpn-client.example.toml vpn-client.toml
 ```
 
 Set:
@@ -71,19 +71,34 @@ Set:
 Run Codex through the Germany node:
 
 ```sh
-sudo -E cargo run -p agent-egress-cli -- --config agent-egress.toml run --region germany --duration 30m -- codex
+sudo -E cargo run -p vpn-client-cli -- --config vpn-client.toml run --region germany --duration 30m -- codex
 ```
 
 Run a test command:
 
 ```sh
-sudo -E cargo run -p agent-egress-cli -- --config agent-egress.toml run --region germany --duration 5m -- curl ifconfig.me
+sudo -E cargo run -p vpn-client-cli -- --config vpn-client.toml run --region germany --duration 5m -- curl ifconfig.me
 ```
+
+Generate a WireGuard client config for a person or device:
+
+```sh
+cargo run -p vpn-client-cli -- --config vpn-client.toml config --region germany --duration 30m --output client.conf
+```
+
+The generated config can be imported into the WireGuard app or used with:
+
+```sh
+sudo wg-quick up ./client.conf
+```
+
+The daemon keeps that peer active until the requested duration expires. To revoke
+it before expiry, call `DELETE /sessions/:session_id` with the printed session ID.
 
 Check the active local status from another terminal:
 
 ```sh
-cargo run -p agent-egress-cli -- --config agent-egress.toml status
+cargo run -p vpn-client-cli -- --config vpn-client.toml status
 ```
 
 ## Safety notes
@@ -91,8 +106,8 @@ cargo run -p agent-egress-cli -- --config agent-egress.toml status
 - The client private key is generated locally and is only written to a temporary WireGuard config.
 - Only the client public key is sent to `vpn-node-daemon`.
 - The SOCKS5 proxy refuses non-loopback bind addresses.
-- If the proxy or WireGuard interface dies, `agent-egress` kills the child process.
-- On normal exit or Ctrl+C, `agent-egress` revokes the daemon session, brings the tunnel down, stops the proxy, removes status, and deletes the temporary config directory.
+- If the proxy or WireGuard interface dies, `vpn-client` kills the child process.
+- On normal exit or Ctrl+C, `vpn-client` revokes the daemon session, brings the tunnel down, stops the proxy, removes status, and deletes the temporary config directory.
 - `vpn-node-daemon` removes peers when sessions expire and removes tracked peers on graceful shutdown.
 
 ## Missing production pieces

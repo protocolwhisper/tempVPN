@@ -27,11 +27,11 @@ impl WireGuardTunnel {
         session: &Session,
     ) -> Result<Self> {
         let temp_dir = tempfile::Builder::new()
-            .prefix("agent-egress-")
+            .prefix("vpn-client-")
             .tempdir()
             .map_err(Error::Io)?;
         let config_path = temp_dir.path().join(format!("{interface_name}.conf"));
-        write_config(&config_path, keypair, session).await?;
+        write_config(&config_path, keypair, session, "0.0.0.0/0, ::/0").await?;
 
         let output = Command::new(&wg_quick_command)
             .arg("up")
@@ -91,8 +91,17 @@ impl WireGuardTunnel {
     }
 }
 
-async fn write_config(path: &Path, keypair: &Keypair, session: &Session) -> Result<()> {
-    let config = format!(
+pub async fn write_config(
+    path: &Path,
+    keypair: &Keypair,
+    session: &Session,
+    allowed_ips: &str,
+) -> Result<()> {
+    Ok(fs::write(path, render_config(keypair, session, allowed_ips)).await?)
+}
+
+pub fn render_config(keypair: &Keypair, session: &Session, allowed_ips: &str) -> String {
+    format!(
         "\
 [Interface]
 PrivateKey = {}
@@ -101,10 +110,13 @@ Address = {}
 [Peer]
 PublicKey = {}
 Endpoint = {}
-AllowedIPs = 0.0.0.0/0, ::/0
+AllowedIPs = {}
 PersistentKeepalive = 25
 ",
-        keypair.private_key, session.assigned_ip, session.server_public_key, session.endpoint
-    );
-    Ok(fs::write(path, config).await?)
+        keypair.private_key,
+        session.assigned_ip,
+        session.server_public_key,
+        session.endpoint,
+        allowed_ips
+    )
 }
