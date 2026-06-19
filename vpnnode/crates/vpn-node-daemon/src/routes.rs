@@ -35,7 +35,7 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/sessions", post(create_session))
         .route(
-            "/sessions/:session_id",
+            "/sessions/{session_id}",
             get(get_session).delete(delete_session),
         )
         .with_state(state)
