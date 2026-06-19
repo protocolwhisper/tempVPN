@@ -6,11 +6,16 @@ use crate::error::{Error, Result};
 
 const DEFAULT_NODE_URL: &str = "http://34.30.107.52:8080";
 const DEFAULT_EXPECTED_EXIT_IP: &str = "34.30.107.52";
+const DEFAULT_MPPX_COMMAND: &str = "mppx";
 
 #[derive(Debug, Clone)]
 pub struct Config {
     pub node_url: String,
-    pub admin_token: String,
+    pub mppx_command: String,
+    pub mppx_account: Option<String>,
+    pub mppx_config: Option<PathBuf>,
+    pub mppx_network: Option<String>,
+    pub mppx_rpc_url: Option<String>,
     pub proxy_addr: SocketAddr,
     pub status_file: PathBuf,
     pub wg_quick_command: String,
@@ -22,7 +27,11 @@ pub struct Config {
 #[derive(Debug, Default, Deserialize)]
 struct FileConfig {
     node_url: Option<String>,
-    admin_token: Option<String>,
+    mppx_command: Option<String>,
+    mppx_account: Option<String>,
+    mppx_config: Option<PathBuf>,
+    mppx_network: Option<String>,
+    mppx_rpc_url: Option<String>,
     proxy_addr: Option<SocketAddr>,
     status_file: Option<PathBuf>,
     wg_quick_command: Option<String>,
@@ -31,13 +40,8 @@ struct FileConfig {
     expected_exit_ip: Option<String>,
 }
 
-#[derive(Debug, Default)]
-pub struct Overrides {
-    pub admin_token: Option<String>,
-}
-
 impl Config {
-    pub async fn load(path: Option<PathBuf>, overrides: Overrides) -> Result<Self> {
+    pub async fn load(path: Option<PathBuf>) -> Result<Self> {
         let file = match path {
             Some(path) => {
                 let contents =
@@ -60,11 +64,15 @@ impl Config {
 
         Ok(Self {
             node_url: env_or_default("VPN_CLIENT_NODE_URL", file.node_url, DEFAULT_NODE_URL),
-            admin_token: override_env_or_required(
-                overrides.admin_token,
-                "VPN_CLIENT_ADMIN_TOKEN",
-                file.admin_token,
-            )?,
+            mppx_command: env_or_default(
+                "VPN_CLIENT_MPPX_COMMAND",
+                file.mppx_command,
+                DEFAULT_MPPX_COMMAND,
+            ),
+            mppx_account: env_var("MPPX_ACCOUNT").or(file.mppx_account),
+            mppx_config: env_or_optional("MPPX_CONFIG", file.mppx_config)?,
+            mppx_network: env_var("MPPX_NETWORK").or(file.mppx_network),
+            mppx_rpc_url: env_var("MPPX_RPC_URL").or(file.mppx_rpc_url),
             proxy_addr,
             status_file: env_or(
                 "VPN_CLIENT_STATUS_FILE",
@@ -91,29 +99,34 @@ impl Config {
     }
 }
 
-fn override_env_or_required(
-    override_value: Option<String>,
-    name: &'static str,
-    value: Option<String>,
-) -> Result<String> {
-    if let Some(value) = override_value.filter(|value| !value.is_empty()) {
-        return Ok(value);
+fn env_var(name: &'static str) -> Option<String> {
+    env::var(name).ok().filter(|value| !value.is_empty())
+}
+
+fn env_or_optional<T>(name: &'static str, value: Option<T>) -> Result<Option<T>>
+where
+    T: std::str::FromStr,
+    T::Err: std::error::Error + Send + Sync + 'static,
+{
+    if let Ok(raw) = env::var(name) {
+        if !raw.is_empty() {
+            return raw
+                .parse()
+                .map(Some)
+                .map_err(|_| Error::InvalidConfig(format!("invalid environment variable {name}")));
+        }
     }
+    Ok(value)
+}
+
+fn env_or_default(name: &'static str, value: Option<String>, default: &str) -> String {
     if let Ok(value) = env::var(name) {
         if !value.is_empty() {
-            return Ok(value);
+            return value;
         }
     }
     value
         .filter(|value| !value.is_empty())
-        .ok_or(Error::MissingConfig(name))
-}
-
-fn env_or_default(name: &'static str, value: Option<String>, default: &str) -> String {
-    env::var(name)
-        .ok()
-        .filter(|value| !value.is_empty())
-        .or(value)
         .unwrap_or_else(|| default.to_string())
 }
 

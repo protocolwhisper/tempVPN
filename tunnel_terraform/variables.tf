@@ -40,9 +40,9 @@ variable "ssh_source_ranges" {
 }
 
 variable "admin_api_source_ranges" {
-  description = "CIDR ranges allowed to call vpn-node-daemon on TCP 8080. Restrict this to your local IP."
+  description = "CIDR ranges allowed to call vpn-node-daemon on TCP 8080. Use 0.0.0.0/0 when paid session purchase must be publicly reachable."
   type        = list(string)
-  default     = []
+  default     = ["0.0.0.0/0"]
 }
 
 variable "wireguard_source_ranges" {

@@ -24,9 +24,6 @@ pub enum Error {
         source: toml::de::Error,
     },
 
-    #[error("{0} is required")]
-    MissingConfig(&'static str),
-
     #[error("invalid duration: {0}")]
     InvalidDuration(String),
 
@@ -41,13 +38,6 @@ pub enum Error {
 
     #[error("{program} failed: {stderr}")]
     CommandFailed { program: String, stderr: String },
-
-    #[error("{operation} failed with {status}: {body}")]
-    HttpStatus {
-        operation: &'static str,
-        status: reqwest::StatusCode,
-        body: String,
-    },
 
     #[error("SOCKS5 proxy must bind to loopback, got {0}")]
     ProxyMustBeLoopback(SocketAddr),
