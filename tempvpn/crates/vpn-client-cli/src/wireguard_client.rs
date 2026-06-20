@@ -31,7 +31,7 @@ impl WireGuardTunnel {
             .tempdir()
             .map_err(Error::Io)?;
         let config_path = temp_dir.path().join(format!("{interface_name}.conf"));
-        write_config(&config_path, keypair, session, "0.0.0.0/0, ::/0").await?;
+        write_config(&config_path, keypair, session, "0.0.0.0/0").await?;
 
         let output = Command::new(&wg_quick_command)
             .arg("up")
@@ -178,6 +178,7 @@ pub fn render_config(keypair: &Keypair, session: &Session, allowed_ips: &str) ->
 [Interface]
 PrivateKey = {}
 Address = {}
+DNS = 1.1.1.1
 
 [Peer]
 PublicKey = {}

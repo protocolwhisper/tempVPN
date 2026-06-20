@@ -52,7 +52,7 @@ pub struct ConnectArgs {
     #[arg(long)]
     pub private_key_path: Option<PathBuf>,
 
-    #[arg(long, default_value = "0.0.0.0/0, ::/0")]
+    #[arg(long, default_value = "0.0.0.0/0")]
     pub allowed_ips: String,
 }
 
@@ -70,7 +70,7 @@ pub struct ConfigArgs {
     #[arg(long)]
     pub private_key_path: Option<PathBuf>,
 
-    #[arg(long, default_value = "0.0.0.0/0, ::/0")]
+    #[arg(long, default_value = "0.0.0.0/0")]
     pub allowed_ips: String,
 }
 
