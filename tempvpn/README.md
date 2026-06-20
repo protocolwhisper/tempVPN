@@ -1,162 +1,161 @@
-# VPN Node Client MVP
+# tempVPN implementation
 
-This directory contains a Rust MVP for one managed US egress node.
+This directory contains the Codex skill, supported macOS launcher, Rust client,
+and Rust VPN-node daemon used by tempVPN. Start with the repository
+[`README.md`](../README.md) for installation and skill-loading instructions.
 
-The target path is:
+> [!IMPORTANT]
+> The end-to-end client workflow currently supports **macOS only**. The daemon
+> runs on Linux, but Linux and Windows are not supported client platforms yet.
 
-```text
-Client/Codex -> 127.0.0.1:1080 SOCKS5 proxy -> WireGuard tunnel -> USA VPS -> internet
-```
-
-## Binaries
-
-- `vpn-node-daemon`: runs on the USA VPS and grants temporary WireGuard peers through an MPP-protected HTTP API.
-- `vpn-client`: runs locally, requests a temporary session, starts a WireGuard tunnel, starts a loopback-only SOCKS5 proxy, and launches the child command with proxy env vars.
-
-## Build
-
-```sh
-cd vpnnode
-cargo build
-```
-
-## USA VPS setup
-
-Install WireGuard and configure `wg0` with `configs/wg-server.example.conf` as a starting point. Enable forwarding and NAT on the VPS.
-
-Create a daemon config:
-
-```sh
-cp configs/vpn-node.example.toml vpn-node.toml
-```
-
-Set these values:
-
-- `admin_token`: a secret token shared only with trusted clients.
-- `server_public_key`: public key for the VPS WireGuard interface.
-- `endpoint`: `USA_VPS_IP:51820`.
-- `wg_interface`: usually `wg0`.
-- `mpp_payment_recipient`: payment recipient for paid session creation. The example defaults to `0xB01E80a8CD7C72589f30D2004aeb60937a2150d3`.
-
-Run:
-
-```sh
-VPN_NODE_ADMIN_TOKEN="change-me" cargo run -p vpn-node-daemon -- --config vpn-node.toml
-```
-
-The session API is:
+## Architecture
 
 ```text
-POST /sessions
-GET /sessions/:session_id
-DELETE /sessions/:session_id
-GET /health
+Mac                                      VPN node
+---                                      --------
+Codex reads SKILL.md
+  -> macOS launcher
+     -> wg creates local keypair
+     -> mppx pays POST /sessions ------> MPP payment validation
+         public key + duration           address allocation
+     <- session JSON ------------------- temporary WireGuard peer
+     -> AppleScript admin dialog
+     -> vpn-client connect ============> WireGuard tunnel
+     -> vpn-client status                automatic peer expiry
 ```
 
-`POST /sessions` is MPP-protected and returns `402 Payment Required` until the request includes a valid Tempo MPP receipt. Use `Authorization: Bearer <admin_token>` or `X-Admin-Token: <admin_token>` for the `GET` and `DELETE` session management endpoints.
+## Components
 
-## Local VPN client
+### `SKILL.md`
 
-The client machine needs:
+The reusable agent workflow. Its front matter tells Codex when the skill should
+trigger, while its body defines the safe purchase, connection, verification,
+and local-only disconnect sequence. It deliberately prohibits sending private
+keys, using daemon admin credentials, or deleting paid sessions.
 
-- Rust/Cargo to build `vpn-client`.
-- WireGuard tools on `PATH`: `wg` and `wg-quick`.
-- Permission to create a WireGuard interface, so tunnel commands usually run with `sudo`.
-- Network access to the node API. For now the Rust client defaults to `http://34.30.107.52:8080`.
-- `mppx` installed and configured from the MPP agent quickstart: `https://mpp.dev/quickstart/agent`.
-- A funded/default `mppx` account, for example from `mppx account create` and the quickstart funding step.
+### `scripts/buy-and-connect-macos.sh`
 
-The explicit agent flow is: create a local WireGuard keypair, pay for a session with `mppx`, then use `vpn-client` to connect with the paid session response.
+The supported user entry point. It:
 
-```sh
+1. validates and converts a duration such as `30m`;
+2. requires macOS and checks `wg`, `mppx`, and `osascript`;
+3. confirms that the MPPX `main` account is visible in macOS Keychain;
+4. creates an ephemeral WireGuard keypair in a restricted temporary directory;
+5. pays the MPP-protected session endpoint;
+6. calls the administrator helper to connect; and
+7. prints `vpn-client status`.
+
+Temporary key and session files are removed when the launcher exits.
+
+### `scripts/connect-with-admin.applescript`
+
+Runs only the privileged `vpn-client connect` command through the native macOS
+administrator dialog. Payment remains unprivileged; only network-interface and
+routing changes are elevated.
+
+### `crates/vpn-client-cli`
+
+The local Rust executable, built as `vpn-client`.
+
+| Command | Purpose |
+| --- | --- |
+| `connect` | Writes a private WireGuard config, brings up the interface, checks it, verifies the visible IP when possible, and records local status. |
+| `status` | Reads local status and checks whether the WireGuard interface is still active. |
+| `disconnect` | Brings down the recorded local interface, deletes its generated config, and removes local status. |
+| `config` | Generates a WireGuard configuration without bringing up the tunnel. This is a development/manual path. |
+| `run` | Starts WireGuard plus a loopback-only SOCKS5 proxy, runs one child command with proxy variables, and cleans up afterward. This is not the default macOS skill flow. |
+
+The launcher passes `--session-response` and `--private-key-path`, keeping MPP
+payment and local tunnel control as explicit steps.
+
+### `crates/vpn-node-daemon`
+
+The Linux server component. It exposes:
+
+| Endpoint | Role |
+| --- | --- |
+| `GET /health` | Reports service health and the number of active sessions. |
+| `POST /sessions` | MPP-protected client endpoint that creates a temporary WireGuard peer. |
+| `GET /sessions/:id` | Administrative session lookup; not used by the skill. |
+| `DELETE /sessions/:id` | Administrative removal; prohibited in the normal paid client flow. |
+
+The daemon allocates tunnel IP addresses, invokes `wg` to manage peers, and
+removes expired peers during periodic cleanup. Its admin token belongs only on
+the server/operator side.
+
+### `configs`
+
+- `vpn-client.example.toml`: optional client command, interface, proxy, status,
+  node URL, and expected-exit-IP overrides.
+- `vpn-node.example.toml`: daemon bind address, WireGuard interface, MPP charge,
+  duration, cleanup, and server identity settings.
+- `wg-server.example.conf`: starting point for the server WireGuard interface.
+
+These files are deployment templates. The supported macOS demo uses compiled
+defaults and the paid session response, so a client config file is not required.
+
+## macOS prerequisites
+
+- macOS administrator access, for WireGuard interface and route changes.
+- `wg` from `wireguard-tools`, for keys and interface checks.
+- Rust/Cargo, to build `vpn-client`.
+- Node.js/npm and `mppx`, for Tempo MPP payment.
+- A funded MPPX account named `main`, available in macOS Keychain.
+- Network access to the session API and returned WireGuard endpoint.
+
+See the root [`README.md`](../README.md#prerequisites) for installation commands
+and the reason each dependency is required.
+
+## Build and use the supported flow
+
+```bash
 cargo build -p vpn-client-cli
-wg genkey | tee /tmp/vpn-client.key | wg pubkey > /tmp/vpn-client.pub
-chmod 600 /tmp/vpn-client.key
-mppx http://34.30.107.52:8080/sessions \
-  --json-body "{\"client_public_key\":\"$(cat /tmp/vpn-client.pub)\",\"duration_seconds\":1800}" \
-  --silent > /tmp/vpn-session.json
-sudo ./target/debug/vpn-client connect \
-  --session-response /tmp/vpn-session.json \
-  --private-key-path /tmp/vpn-client.key
+./scripts/buy-and-connect-macos.sh 30m
 ```
 
-Disconnect the local tunnel. The paid server-side session expires automatically:
+The launcher expects `target/debug/vpn-client`. During connection, macOS opens
+an administrator dialog. Do not launch it first in an agent sandbox: sandboxed
+MPPX account discovery can be unable to see the real Keychain account.
 
-```sh
+Check status or disconnect from this directory:
+
+```bash
+./target/debug/vpn-client status
 sudo ./target/debug/vpn-client disconnect
 ```
 
-You can also create a local config for overrides:
+The paid server peer remains until its expiry time; disconnect is local cleanup
+only.
 
-```sh
-cp configs/vpn-client.example.toml vpn-client.toml
+## Server development
+
+The daemon is a separate operator concern and normally runs on the Linux VPN
+node:
+
+```bash
+cp configs/vpn-node.example.toml vpn-node.toml
+VPN_NODE_ADMIN_TOKEN="replace-with-a-server-only-secret" \
+  cargo run -p vpn-node-daemon -- --config vpn-node.toml
 ```
 
-Optional values:
+Before deployment, configure WireGuard forwarding/NAT, replace every example
+placeholder, keep the admin token out of client environments, and terminate the
+HTTP API with TLS. The current in-memory session store is not crash-persistent.
 
-- `node_url`: the daemon URL, for example `http://34.30.107.52:8080`.
-- `mppx_command`: path to the `mppx` binary. Defaults to `mppx`.
-- `mppx_account`: optional named `mppx` account. Defaults to the `mppx` default account or `MPPX_ACCOUNT`.
-- `mppx_config`: optional `mppx` config path.
-- `mppx_network`: optional Tempo network override, for example `testnet`.
-- `mppx_rpc_url`: optional Tempo RPC override. Defaults to `mppx` behavior or `MPPX_RPC_URL`.
-- `expected_exit_ip`: the USA VPS public IP.
+## Safety and lifecycle
 
-Do not paste private keys into chat or commit them. Manage the payer account with `mppx`:
+- The client private key is generated and retained locally.
+- The session request contains only the client public key and duration.
+- The local SOCKS5 proxy used by `run` binds to loopback only.
+- `run` stops its child process if the tunnel or proxy fails.
+- `connect` persists local state so `status` and `disconnect` can find the
+  correct interface and generated config.
+- Server cleanup removes the temporary peer at expiry even if the client does
+  not disconnect cleanly.
 
-```sh
-mppx account create
-mppx account list
-```
+## Not yet supported
 
-Run Codex through the USA node:
-
-```sh
-sudo ./target/debug/vpn-client run --duration 30m -- codex
-```
-
-Run a test command:
-
-```sh
-sudo ./target/debug/vpn-client run --duration 5m -- curl ifconfig.me
-```
-
-Generate a WireGuard client config for a person or device:
-
-```sh
-cargo run -p vpn-client-cli -- config \
-  --session-response /tmp/vpn-session.json \
-  --private-key-path /tmp/vpn-client.key \
-  --output client.conf
-```
-
-The generated config can be imported into the WireGuard app or used with:
-
-```sh
-sudo wg-quick up ./client.conf
-```
-
-The daemon keeps that peer active until the requested duration expires. The paid
-client does not revoke or delete server sessions.
-
-Check the active local status from another terminal:
-
-```sh
-cargo run -p vpn-client-cli -- --config vpn-client.toml status
-```
-
-## Safety notes
-
-- The client private key is generated locally and is only written to a temporary WireGuard config.
-- Only the client public key is sent to `vpn-node-daemon`.
-- The SOCKS5 proxy refuses non-loopback bind addresses.
-- If the proxy or WireGuard interface dies, `vpn-client` kills the child process.
-- On normal exit or Ctrl+C, `vpn-client` brings the tunnel down, stops the proxy, removes status, and deletes the temporary config directory. The daemon session expires automatically.
-- `vpn-node-daemon` removes peers when sessions expire and removes tracked peers on graceful shutdown.
-
-## Missing production pieces
-
-- Persistent session store for crash recovery.
-- TLS termination for the daemon if it is exposed directly.
-- Systemd unit files and hardened Linux firewall rules.
-- Multi-region routing.
+- End-to-end Linux or Windows client use.
+- Multiple VPN regions and node selection.
+- Persistent daemon sessions across crashes.
+- Direct public production exposure without a TLS reverse proxy.
