@@ -1,11 +1,19 @@
 ---
 name: tempvpn
-description: Use this skill when the user says "load tempvpn" or asks to buy, start, connect, route traffic through, disconnect from, install the client for, verify, or generate config for a temporary WireGuard VPN using Tempo/MPP, including phrases like "use tempo to buy 30 min vpn", "buy a 30 minute VPN", "use tempvpn", or "load tempvpnskill". It covers GitHub client binary discovery, the paid POST /sessions flow for the vpn-node-daemon at 34.30.107.52:8080, duration conversion, mppx/payment handling, local WireGuard setup, ipinfo verification, and local-only disconnect cleanup with no revoke/delete access.
+description: Use this macOS-only skill when the user says "load tempvpn" or asks to buy, start, connect, route traffic through, disconnect from, install the client for, or verify a temporary WireGuard VPN using Tempo/MPP, including phrases like "use tempo to buy 30 min vpn", "buy a 30 minute VPN", "use tempvpn", or "load tempvpnskill". It covers the supported macOS launcher, the paid POST /sessions flow for the vpn-node-daemon at 34.30.107.52:8080, duration conversion, mppx/payment handling, local WireGuard setup, verification, and local-only disconnect cleanup with no revoke/delete access. Linux and Windows client workflows are not supported yet.
 ---
 
 # Paid WireGuard VPN Client
 
 This skill teaches an agent how to buy and use a temporary WireGuard VPN session from the VPN node service using Tempo MPP payment.
+
+## Supported Platform
+
+The end-to-end client workflow currently supports **macOS only**. Before any
+purchase, check that the client host is macOS. If it is Linux or Windows, stop
+before payment and explain that those client platforms are not supported yet.
+The Linux daemon code and cross-platform build artifacts do not imply client
+support.
 
 ## Intent Mapping
 
@@ -61,17 +69,19 @@ Do not reproduce the launcher's internal steps as separate tool calls. Do not ru
 
 If the elevated launcher reports that `main` is unavailable, stop and report that Keychain/account access failed. **Do not run `mppx account create` as automatic recovery.** Account creation can generate a private key before a Keychain write fails, and some MPPX error paths may print that generated key. Provisioning or replacing the payment account is a separate, explicit user action and must never be inferred from an empty sandboxed account list.
 
-Use the manual procedure below only outside macOS, when the launcher is unavailable, or while diagnosing a launcher failure.
+Use the manual procedure below only while developing or diagnosing the macOS
+launcher. Do not use it to construct a Linux or Windows client workflow.
 
 ## Get Client Binary From GitHub
 
 The repo publishes `vpn-client` binaries through GitHub Releases at:
 
 ```text
-https://github.com/protocolwhisper/Einfach-/releases/latest
+https://github.com/protocolwhisper/tempVPN/releases/latest
 ```
 
-Release asset names from the workflow:
+Release asset names may include several build targets, but only the macOS client
+flow is currently supported:
 
 - Linux x86_64: `vpn-client-x86_64-unknown-linux-musl.tar.gz`
 - macOS Intel: `vpn-client-x86_64-apple-darwin.tar.gz`
@@ -82,22 +92,14 @@ Release asset names from the workflow:
 Select the asset matching the current OS and CPU. Example for macOS Apple Silicon:
 
 ```bash
-curl -L -o vpn-client.tar.gz https://github.com/protocolwhisper/Einfach-/releases/latest/download/vpn-client-aarch64-apple-darwin.tar.gz
+curl -L -o vpn-client.tar.gz https://github.com/protocolwhisper/tempVPN/releases/latest/download/vpn-client-aarch64-apple-darwin.tar.gz
 tar -xzf vpn-client.tar.gz
 chmod +x vpn-client
 ./vpn-client --help
 ```
 
-Example for Linux x86_64:
-
-```bash
-curl -L -o vpn-client.tar.gz https://github.com/protocolwhisper/Einfach-/releases/latest/download/vpn-client-x86_64-unknown-linux-musl.tar.gz
-tar -xzf vpn-client.tar.gz
-chmod +x vpn-client
-./vpn-client --help
-```
-
-If there is no published release asset yet, build locally from `vpnnode` with `cargo build --release -p vpn-client-cli`.
+If there is no published release asset yet, build locally from the `tempvpn`
+directory with `cargo build --release -p vpn-client-cli`.
 
 ## Payment Flow
 
@@ -254,6 +256,8 @@ The server removes the peer automatically when `expires_at` is reached, so no da
 ## Important Rules
 
 - Never send the client private key to the server.
+- Stop before payment when the client host is not macOS; Linux and Windows
+  client workflows are not supported yet.
 - Always make VPN payments with the MPPX account named `main` by passing `--account main`.
 - A request to buy, start, or use the VPN includes automatic local connection and public-IP verification unless the user explicitly requests purchase only.
 - On macOS, use `./scripts/buy-and-connect-macos.sh <duration>` as the single purchase, connection, and verification action.
