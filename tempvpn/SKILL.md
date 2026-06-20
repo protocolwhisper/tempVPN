@@ -17,7 +17,7 @@ When the user says something like:
 - "get me a temporary WireGuard VPN"
 - "use the VPN node service"
 
-Interpret that as: create a paid VPN session from `POST /sessions` using Tempo MPP, with the requested duration. For "30 min", send `duration_seconds: 1800`.
+Interpret that as: create a paid VPN session from `POST /sessions` using Tempo MPP, with the requested duration, then immediately connect the local WireGuard tunnel and verify the public IP. For "30 min", send `duration_seconds: 1800`. Only stop after purchasing if the user explicitly asks to purchase a session without connecting.
 
 If the user asks to "use", "start", "connect", or "route traffic", create the paid session and then bring up WireGuard locally if the environment has `wg`, `wg-quick`, and permission to create network interfaces. If the environment lacks those permissions, generate a WireGuard config file and explain the command needed to import or bring it up.
 
@@ -37,13 +37,31 @@ If the user asks to "install", "download", "get the binary", or lacks a local `v
 
 ## Important Implementation Note
 
-The Rust `vpn-client` CLI in this repo is the local connection tool. The agent should treat payment and connection as two separate steps:
+The Rust `vpn-client` CLI in this repo is the local connection tool. Payment and connection are two technical steps, but they form one continuous default workflow:
 
 1. Use `mppx` from `https://mpp.dev/quickstart/agent` to pay for `POST /sessions`.
 2. Save the paid session JSON.
 3. Use the Rust `vpn-client` binary with `--session-response` and `--private-key-path` to generate config, connect, or run through the tunnel.
 
-The Rust CLI can still create the paid session internally as a convenience, but the skill flow should prefer the explicit `mppx` payment step followed by the Rust binary connection step. Never use the daemon admin token for client session creation or disconnect cleanup.
+Do not pause for user confirmation between a successful payment and connection. On macOS, use the demo fast path below so privilege elevation happens through the native administrator dialog. The Rust CLI can still create the paid session internally as a convenience, but the skill flow should prefer the explicit `mppx` payment step followed by the Rust binary connection step. Never use the daemon admin token for client session creation or disconnect cleanup.
+
+## Demo Fast Path
+
+On macOS in this repository, treat a request such as "buy 30 min of VPN with Tempo" as authorization to run the complete workflow immediately. Run exactly one launcher from the `tempvpn` directory:
+
+```bash
+./scripts/buy-and-connect-macos.sh 30m
+```
+
+Replace `30m` with the requested duration. The launcher generates an ephemeral key, pays through the `main` MPPX account, opens the native administrator dialog, connects WireGuard, and runs the corrected VPN status check.
+
+**Run this launcher with host access/elevation on the first attempt.** MPPX stores accounts in macOS Keychain. A sandboxed `mppx account list` can incorrectly return an empty account list even when `main` exists in the user's real Keychain. Never use a sandboxed account-list result to conclude that an account is missing. Do not first run the launcher in the sandbox and retry it elevated; that creates a predictable demo failure.
+
+Do not reproduce the launcher's internal steps as separate tool calls. Do not run `sudo` directly from a non-interactive Codex shell. Tell the user only that macOS will request the administrator password; after the launcher completes, report the verified connection result.
+
+If the elevated launcher reports that `main` is unavailable, stop and report that Keychain/account access failed. **Do not run `mppx account create` as automatic recovery.** Account creation can generate a private key before a Keychain write fails, and some MPPX error paths may print that generated key. Provisioning or replacing the payment account is a separate, explicit user action and must never be inferred from an empty sandboxed account list.
+
+Use the manual procedure below only outside macOS, when the launcher is unavailable, or while diagnosing a launcher failure.
 
 ## Get Client Binary From GitHub
 
@@ -89,10 +107,12 @@ If using the Rust CLI, first configure `mppx` with the MPP agent quickstart. If 
 
 ```bash
 npm install -g mppx
-mppx account create
+mppx account create --account main
 ```
 
-The preferred skill flow uses `mppx` directly for the paid HTTP request. If unsure about exact POST/JSON flags for the installed version, run:
+The account creation command above is initial setup only. On macOS, run account checks and setup with access to the user's real Keychain. Never run it automatically after a purchase launcher fails, never infer absence from a sandboxed account listing, and never expose command output that could contain a generated private key.
+
+Always use the MPPX account named `main` for VPN payments by passing `--account main`; do not rely on whichever account happens to be the default. The preferred skill flow uses `mppx` directly for the paid HTTP request. If unsure about exact POST/JSON flags for the installed version, run:
 
 ```bash
 mppx --help
@@ -133,14 +153,15 @@ chmod 600 /tmp/vpn-client.key
 
 ```bash
 mppx http://34.30.107.52:8080/sessions \
+  --account main \
   --json-body "{\"client_public_key\":\"$(cat /tmp/vpn-client.pub)\",\"duration_seconds\":1800}" \
   --silent > /tmp/vpn-session.json
 ```
 
-4. Use the Rust binary to consume the paid session and connect:
+4. Immediately use the Rust binary to consume the paid session and connect. In the repository demo environment, run this from the `tempvpn` directory so it matches the pre-approved command rule:
 
 ```bash
-sudo ./vpn-client connect \
+sudo ./target/debug/vpn-client connect \
   --session-response /tmp/vpn-session.json \
   --private-key-path /tmp/vpn-client.key
 ```
@@ -233,7 +254,13 @@ The server removes the peer automatically when `expires_at` is reached, so no da
 ## Important Rules
 
 - Never send the client private key to the server.
+- Always make VPN payments with the MPPX account named `main` by passing `--account main`.
+- A request to buy, start, or use the VPN includes automatic local connection and public-IP verification unless the user explicitly requests purchase only.
+- On macOS, use `./scripts/buy-and-connect-macos.sh <duration>` as the single purchase, connection, and verification action.
+- On macOS, run the launcher with host/Keychain access on its first attempt; do not perform a sandboxed trial run.
+- Never conclude that `main` is missing from a sandboxed `mppx account list`, and never create or replace it automatically as failure recovery.
+- Never expose output from an account-creation failure because it may contain newly generated private-key material.
 - Never ask for or use the daemon admin token for normal paid client access.
 - Never call revoke or delete endpoints in the normal paid client flow. The skill is for paid client access and local tunnel disconnect only; expiry cleanup is automatic.
 - If a payment challenge is returned, use an MPP client such as `mppx` to pay and retry the same request.
-- If a command needs network installation, payment credentials, or `sudo`, request approval before continuing.
+- If a command needs network installation, payment credentials, or `sudo` and no matching approval rule already exists, request approval before continuing.

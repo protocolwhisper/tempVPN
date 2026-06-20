@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::{net::SocketAddr, time::Duration};
 
 use reqwest::{Client, Proxy};
 use tokio::net::TcpStream;
@@ -23,7 +23,19 @@ pub async fn check_tunnel(tunnel: &WireGuardTunnel) -> Result<()> {
 
 pub async fn visible_ip(proxy_addr: SocketAddr) -> Result<String> {
     let proxy = Proxy::all(format!("socks5h://{proxy_addr}"))?;
-    let client = Client::builder().proxy(proxy).build()?;
+    let client = Client::builder()
+        .proxy(proxy)
+        .timeout(Duration::from_secs(10))
+        .build()?;
+    fetch_visible_ip(client).await
+}
+
+pub async fn visible_ip_direct() -> Result<String> {
+    let client = Client::builder().timeout(Duration::from_secs(10)).build()?;
+    fetch_visible_ip(client).await
+}
+
+async fn fetch_visible_ip(client: Client) -> Result<String> {
     let response = client.get("https://ifconfig.me/ip").send().await?;
     if !response.status().is_success() {
         return Err(Error::ExitIpCheckStatus(response.status()));

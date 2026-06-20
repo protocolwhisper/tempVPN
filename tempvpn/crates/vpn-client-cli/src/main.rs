@@ -200,11 +200,29 @@ async fn connect(config: Config, args: cli::ConnectArgs) -> Result<()> {
         return Err(Error::TunnelInactive(config.interface_name));
     }
 
+    // The interface is already active at this point. Treat the external IP
+    // lookup as diagnostics: transient DNS/HTTP failures must not undo a
+    // successful connection and make the demo appear to connect, then die.
+    let observed_exit_ip = match health::visible_ip_direct().await {
+        Ok(ip) => {
+            if let Some(expected) = &config.expected_exit_ip {
+                if ip != *expected {
+                    warn!(expected, observed = ip, "exit IP verification mismatch");
+                }
+            }
+            Some(ip)
+        }
+        Err(err) => {
+            warn!(error = %err, "exit IP verification failed; leaving tunnel connected");
+            None
+        }
+    };
+
     StatusFile {
         session_id: session.session_id.clone(),
         proxy: config.proxy_addr,
         tunnel_ip: session.assigned_ip.clone(),
-        exit_ip: None,
+        exit_ip: observed_exit_ip.clone(),
         interface_name: config.interface_name.clone(),
         config_path: Some(config_path.clone()),
         expires_at: session.expires_at,
@@ -217,6 +235,10 @@ async fn connect(config: Config, args: cli::ConnectArgs) -> Result<()> {
     println!(
         "Assigned IP: {}",
         session.assigned_ip.trim_end_matches("/32")
+    );
+    println!(
+        "Exit IP: {}",
+        observed_exit_ip.unwrap_or_else(|| "verification unavailable".to_string())
     );
     println!("Config: {}", config_path.display());
     println!("Expires at: {}", session.expires_at);
@@ -299,18 +321,42 @@ async fn print_status(config: Config) -> Result<()> {
     let remaining = status.expires_at - Utc::now();
     let remaining_secs = remaining.num_seconds().max(0);
     let remaining_mins = remaining_secs / 60;
-    let health = if health::check_proxy(status.proxy).await.is_ok() {
+
+    let is_connect = status.config_path.is_some();
+    let (is_healthy, exit_ip) = if is_connect {
+        match health::visible_ip_direct().await {
+            Ok(observed) => {
+                let matches_expected = config
+                    .expected_exit_ip
+                    .as_ref()
+                    .map(|expected| expected == &observed)
+                    .unwrap_or(true);
+                (matches_expected, Some(observed))
+            }
+            Err(_) => (false, None),
+        }
+    } else {
+        (
+            health::check_proxy(status.proxy).await.is_ok(),
+            status.exit_ip.clone(),
+        )
+    };
+    let health = if remaining_secs > 0 && is_healthy {
         "healthy"
     } else {
         "unhealthy"
     };
 
     println!("Session: {}", status.session_id);
-    println!("Proxy: {}", status.proxy);
+    if is_connect {
+        println!("Interface: {}", status.interface_name);
+    } else {
+        println!("Proxy: {}", status.proxy);
+    }
     println!("Tunnel IP: {}", status.tunnel_ip.trim_end_matches("/32"));
     println!(
         "Exit IP: {}",
-        status.exit_ip.unwrap_or_else(|| "unknown".to_string())
+        exit_ip.unwrap_or_else(|| "unknown".to_string())
     );
     println!("Status: {health}");
     println!("Expires in: {remaining_mins}m");
