@@ -1,7 +1,7 @@
 [workspace]
 members = [
-    "crates/vpn-node-daemon",
-    "crates/vpn-client-cli",
+    "node/linux",
+    "clients/linux",
 ]
 resolver = "2"
 
@@ -19,7 +19,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 tempfile = "3.27.0"
 thiserror = "2.0.18"
-tokio = { version = "1.52.3", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "time"] }
+tokio = { version = "1.52.3", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 toml = "1.1.2"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

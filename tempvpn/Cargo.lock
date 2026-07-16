@@ -5306,6 +5306,7 @@ dependencies = [
  "chrono",
  "clap",
  "mpp",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror",
