@@ -9,9 +9,11 @@ This skill teaches an agent how to buy and use a temporary WireGuard VPN session
 
 ## Supported Platforms
 
-Use the Rust `vpn-client` on Linux and the signed `TempVPN.app`/`tempvpnctl` pair
-on macOS. Windows is not supported. Never use the Rust client as the macOS
-product path.
+Use the Rust `vpn-client` with `wg`/`wg-quick` on Linux. On macOS use the signed
+`tempvpnctl` plus the invisible `TempVPN.app` that contains the Packet Tunnel
+Provider and WireGuardKit. The macOS host has no graphical interface; it exists
+only because macOS requires an app container for Network Extensions. Windows is
+not supported. Never use the Rust client as the macOS product path.
 
 ## Intent Mapping
 
@@ -25,11 +27,17 @@ When the user says something like:
 
 Interpret that as: create a paid VPN session from `POST /sessions` using Tempo MPP, with the requested duration, then immediately connect the local WireGuard tunnel and verify the public IP. For "30 min", send `duration_seconds: 1800`. Only stop after purchasing if the user explicitly asks to purchase a session without connecting.
 
-If the user asks to "use", "start", "connect", or "route traffic", create the paid session and then bring up WireGuard locally if the environment has `wg`, `wg-quick`, and permission to create network interfaces. If the environment lacks those permissions, generate a WireGuard config file and explain the command needed to import or bring it up.
+If the user asks to "use", "start", "connect", or "route traffic", create the
+paid session and use the designated platform client. Linux requires `wg`,
+`wg-quick`, and network-interface permission. macOS must use the installed
+native Packet Tunnel path and must not fall back to external WireGuard commands.
 
 If the user asks to "disconnect", "stop", "turn off", or "end the VPN", bring down the local WireGuard tunnel/interface/config and pause the paid server-side usage balance. The client flow has no revoke/delete/admin access. Do not call, ask for, or depend on any daemon revoke/delete endpoint; the server-side session expires automatically when connected time is exhausted or its grace deadline passes.
 
-If the user asks to "install", "download", "get the binary", or lacks a local `vpn-client`, fetch the latest release binary from GitHub before continuing. For paid Tempo purchase requests, still use the paid HTTP flow unless the binary has been updated to support MPP.
+If the user asks to "install", "download", or lacks the platform command, use
+the platform installation section below. Installation and payment are separate
+actions. Never hide an installation, administrator prompt, or dependency setup
+inside the paid request.
 
 ## Registry and service selection
 
@@ -52,7 +60,10 @@ The Rust `vpn-client` CLI in this repo is the local connection tool. Payment and
 
 1. Discover the node, then use preinstalled `mppx` to pay that node's `POST /sessions`.
 2. Save the paid session JSON.
-3. On Linux use `vpn-client connect --node-url SELECTED_NODE_URL` with the paid response. On macOS use `tempvpnctl connect --session-response <path|->`.
+3. On Linux use `vpn-client connect --node-url SELECTED_NODE_URL` with the paid
+   response. On macOS pass the response path and selected node URL to
+   `tempvpnctl connect`. The selected-node override makes accidental cross-node
+   import fail closed; the exact command appears below.
 
 Do not pause for confirmation between successful payment and connection. Never
 use a daemon admin or registry-write token for client lifecycle calls. Never
@@ -84,6 +95,28 @@ chmod +x vpn-client
 If there is no published release asset yet, build locally from the `tempvpn`
 directory with `cargo build --release -p vpn-client-cli`.
 
+## Install The Native Headless macOS Client
+
+The macOS release contains two signed products:
+
+```text
+/Applications/TempVPN.app   invisible Network Extension container
+/usr/local/bin/tempvpnctl   agent-facing controller
+```
+
+Do not install unsigned builds and do not substitute `wg`/`wg-quick`. From a
+trusted signed source checkout or release package, installation is:
+
+```bash
+sudo ./clients/macos/install-tempvpnctl.sh
+tempvpnctl --version
+```
+
+The installer itself does not invoke `sudo`; the agent must request permission
+before running it with administrator privileges. macOS requests one-time VPN
+profile approval on first connection. Installation never creates an MPP
+account.
+
 ## Payment Flow
 
 Call `POST /sessions` to create a session. If the request is unpaid, the server returns `402 Payment Required` with a `WWW-Authenticate: Payment ...` challenge. Do not use admin tokens, revoke/delete endpoints, or bypass endpoints for client access.
@@ -107,7 +140,9 @@ Reference: `https://mpp.dev/quickstart/agent#mppx`
 
 ## Create A Paid Session
 
-Generate a WireGuard keypair locally. Send only the public key to the server.
+Payment creates a node-bound usage balance. It does not send a WireGuard key.
+The platform client generates the key locally afterward and sends only its
+public key to that same node's connect endpoint.
 
 Use the requested duration in seconds:
 
@@ -119,15 +154,17 @@ Request body:
 
 ```json
 {
-  "client_public_key": "<wireguard-client-public-key>",
   "duration_seconds": 1800
 }
 ```
 
 Agent procedure:
 
-1. Check for WireGuard tools with `wg --version` and, if connecting locally, `wg-quick --version`.
-2. Generate a local WireGuard private key:
+1. On Linux, check `wg --version` and `wg-quick --version`. On macOS, check
+   `tempvpnctl --version` and verify `/Applications/TempVPN.app` is installed;
+   do not require external WireGuard tools.
+2. On Linux, generate a local WireGuard private key. On macOS, `tempvpnctl`
+   generates and stores it in the user's Keychain during session import:
 
 ```bash
 wg genkey > /tmp/vpn-client.key
@@ -143,7 +180,10 @@ mppx "$SELECTED_NODE_URL/sessions" \
   --silent > /tmp/vpn-session.json
 ```
 
-4. Immediately use the Rust binary to activate the paid session and connect. The client derives the public key locally from `/tmp/vpn-client.key`, calls `POST /sessions/{id}/connect`, and starts burning connected-time balance only after the peer is active. In the repository demo environment, run this from the `tempvpn` directory so it matches the pre-approved command rule:
+4. Immediately use the platform client to activate the paid session and
+   connect. The client derives the public key locally, calls
+   `POST /sessions/{id}/connect`, and starts burning connected-time balance only
+   after the peer is active. On Linux, in the repository demo environment:
 
 ```bash
 sudo ./target/debug/vpn-client connect \
@@ -152,7 +192,16 @@ sudo ./target/debug/vpn-client connect \
   --private-key-path /tmp/vpn-client.key
 ```
 
-For config generation without bringing up a tunnel:
+On macOS:
+
+```bash
+tempvpnctl connect \
+  --session-response /tmp/vpn-session.json \
+  --node-url "$SELECTED_NODE_URL" \
+  --json
+```
+
+For Linux config generation without bringing up a tunnel:
 
 ```bash
 ./vpn-client config \
@@ -196,7 +245,7 @@ AllowedIPs = 0.0.0.0/0, ::/0
 PersistentKeepalive = 25
 ```
 
-For a local tunnel on a machine with WireGuard privileges:
+For a manual Linux tunnel on a machine with WireGuard privileges:
 
 ```bash
 sudo wg-quick up ./client.conf
@@ -212,13 +261,24 @@ curl -s https://ipinfo.io/json
 
 The response must match the selected node's `expected_exit_ip`. Treat this verification as part of the normal completion workflow. Report the `ip`, `city`, `region`, `country`, and `org` fields back to the user when available.
 
-If the returned `ip` is not the VPN node IP, do not claim the VPN is active. Check that `wg-quick up` succeeded, the WireGuard interface exists, and the config uses `AllowedIPs = 0.0.0.0/0, ::/0`.
+If the returned `ip` is not the VPN node IP, do not claim the VPN is active. On
+Linux, inspect `wg-quick` and the generated configuration. On macOS, run
+`tempvpnctl status --json` and inspect the native `TempVPN` profile in System
+Settings.
 
 ## Disconnect
 
 Disconnect means local tunnel teardown plus pausing the paid usage balance. The paid client does not have revoke or delete access, and it must not attempt server-side session deletion. The daemon expires the paid session when `remaining_seconds` reaches zero or the `not_after` grace deadline passes.
 
-For a WireGuard config brought up with `wg-quick`, disconnect locally with:
+On macOS, always disconnect through the controller so it tears down WireGuard
+and pauses the server-side balance:
+
+```bash
+tempvpnctl disconnect --json
+```
+
+For a Linux WireGuard config brought up manually with `wg-quick`, disconnect
+locally with:
 
 ```bash
 sudo wg-quick down ./client.conf
@@ -244,10 +304,13 @@ The server removes the peer automatically when `remaining_seconds` reaches zero 
 
 - Never send the client private key to the server.
 - Stop before payment on Windows. Use the native client designated above on Linux or macOS.
+- Keep platform networking separate: Linux uses `wg`/`wg-quick`; macOS uses the
+  signed headless app, Packet Tunnel extension, and WireGuardKit.
 - Discover first and ensure MPP payment and all session lifecycle calls target the exact same node.
 - Always make VPN payments with the MPPX account named `main` by passing `--account main`.
 - A request to buy, start, or use the VPN includes automatic local connection and public-IP verification unless the user explicitly requests purchase only.
-- On macOS, use `tempvpnctl select`, pay that node with `mppx`, then import the response with `tempvpnctl connect`.
+- On macOS, use `tempvpnctl select`, pay that node with `mppx`, then import the
+  response with `tempvpnctl connect --node-url SELECTED_NODE_URL`.
 - Never conclude that `main` is missing from a sandboxed `mppx account list`, and never create or replace it automatically as failure recovery.
 - Never expose output from an account-creation failure because it may contain newly generated private-key material.
 - Never ask for or use the daemon admin token for normal paid client access.

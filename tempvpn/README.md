@@ -1,12 +1,13 @@
 # tempVPN implementation
 
-This directory contains the Codex skill, native macOS app/CLI, Linux Rust client,
-and Rust VPN-node/registry daemon used by tempVPN. Start with the repository
+This directory contains the Codex skill, native headless macOS client, Linux
+Rust client, and Rust VPN-node/registry daemon used by tempVPN. Start with the repository
 [`README.md`](../README.md) for installation and skill-loading instructions.
 
 > [!IMPORTANT]
-> Linux uses `vpn-client`; macOS uses the signed `TempVPN.app`, Packet Tunnel
-> Provider, and `tempvpnctl`. Windows is not supported.
+> Linux uses the Rust `vpn-client` with `wg`/`wg-quick`. macOS uses
+> `tempvpnctl`, an invisible host app, a Packet Tunnel extension, and
+> WireGuardKit. Windows is not supported.
 
 ## Architecture
 
@@ -75,13 +76,15 @@ admin token belongs only on the server/operator side.
   duration, cleanup, and server identity settings.
 - `wg-server.example.conf`: starting point for the server WireGuard interface.
 
-These files are deployment templates. The supported macOS demo uses compiled
-defaults and the paid session response, so a client config file is not required.
+These files are deployment templates. The macOS CLI uses the registry
+environment variable and paid session response, so a client config file is not
+required.
 
 ## Client prerequisites
 
 - Linux: `wg`, `wg-quick`, and the Rust `vpn-client`.
-- macOS: signed `TempVPN.app`, its Packet Tunnel Provider, and signed `tempvpnctl`.
+- macOS: signed `tempvpnctl`, invisible `TempVPN.app`, Packet Tunnel Provider,
+  and WireGuardKit. The host has no graphical interface.
 - Node.js/npm and `mppx`, for Tempo MPP payment.
 - A funded MPPX account named `main`, available in macOS Keychain.
 - Network access to the session API and returned WireGuard endpoint.
@@ -93,9 +96,14 @@ and the reason each dependency is required.
 
 ```bash
 cargo build -p vpn-client-cli
-CLANG_MODULE_CACHE_PATH="$PWD/target/swift-cli-module-cache" \
-  swiftc -parse-as-library clients/macos/CLI/*.swift -o target/tempvpnctl
-xcodebuild -project clients/macos/TempVPN.xcodeproj -scheme TempVPN build
+./clients/macos/build-macos-products.sh
+```
+
+Unsigned macOS outputs validate compilation only. After Apple signing, install
+the native pair:
+
+```bash
+sudo ./clients/macos/install-tempvpnctl.sh
 ```
 
 Select before paying. The selected node URL must be used for both MPP payment
@@ -105,6 +113,10 @@ and session import:
 ./target/debug/vpn-client select --region eu-west --json
 ./target/tempvpnctl select --region eu-west --json
 ```
+
+The headless host exists only because macOS requires an app container for the
+Network Extension. Agents and users control it through `tempvpnctl` or macOS
+System Settings; there is no graphical TempVPN interface.
 
 Disconnect pauses the paid server session so unused connected time remains
 available until the configured grace deadline.

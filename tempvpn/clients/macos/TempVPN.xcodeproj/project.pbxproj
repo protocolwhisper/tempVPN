@@ -8,12 +8,11 @@
 
 /* Begin PBXBuildFile section */
 		8C64396058594AF38C798C5C /* TempoVPNApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 102A27ED52EE4F6CB25641F6 /* TempoVPNApp.swift */; };
-		86D3D586A65348C291795F7F /* TempoVPNController.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF8EB9DB098D459D92BAE00E /* TempoVPNController.swift */; };
-		3FB6CA342B32420B82FBC8AF /* TempoVPNStatusStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B324D687E4846678C1846CA /* TempoVPNStatusStore.swift */; };
-		A9D3818DF333427CB6F686FB /* TempoVPNProfile.swift in Host Sources */ = {isa = PBXBuildFile; fileRef = 7D29FBC91F0D4F09897E2E66 /* TempoVPNProfile.swift */; };
 		4E8063E3E1D14E0783F9F547 /* PacketTunnelProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C1D21DD72B4436BA7ECB929 /* PacketTunnelProvider.swift */; };
 		562A5DD900734819A7497204 /* TunnelConfiguration+WgQuickConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF328D52FF9E406A81EEE51F /* TunnelConfiguration+WgQuickConfig.swift */; };
 		959A1EDC7CE74B9C814A9CF4 /* String+ArrayConversion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30618318A0A24D558E09C96B /* String+ArrayConversion.swift */; };
+		A11E91C4C81F4E2399D09A11 /* error.swift in PacketTunnel Sources */ = {isa = PBXBuildFile; fileRef = B11E91C4C81F4E2399D09A11 /* error.swift */; };
+		A22E91C4C81F4E2399D09A22 /* helpers.swift in PacketTunnel Sources */ = {isa = PBXBuildFile; fileRef = B22E91C4C81F4E2399D09A22 /* helpers.swift */; };
 		D8F6FD6D76ED46A69870BF52 /* TempoVPNProfile.swift in Extension Sources */ = {isa = PBXBuildFile; fileRef = 7D29FBC91F0D4F09897E2E66 /* TempoVPNProfile.swift */; };
 		B552FA199F284579AAC942A4 /* WireGuardKit in Frameworks */ = {isa = PBXBuildFile; productRef = C7F8D0726BE94217BD582607 /* WireGuardKit */; };
 		FC79FD78B65148B4A5A7FD0C /* TempVPNPacketTunnel.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 51D4107FBA624813BC25A7FF /* TempVPNPacketTunnel.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -47,11 +46,11 @@
 		F329C5E175A448E493D7E1FA /* TempVPN.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TempVPN.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		51D4107FBA624813BC25A7FF /* TempVPNPacketTunnel.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = TempVPNPacketTunnel.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		102A27ED52EE4F6CB25641F6 /* TempoVPNApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TempoVPNApp.swift; sourceTree = "<group>"; };
-		EF8EB9DB098D459D92BAE00E /* TempoVPNController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TempoVPNController.swift; sourceTree = "<group>"; };
-		0B324D687E4846678C1846CA /* TempoVPNStatusStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TempoVPNStatusStore.swift; sourceTree = "<group>"; };
 		2C1D21DD72B4436BA7ECB929 /* PacketTunnelProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacketTunnelProvider.swift; sourceTree = "<group>"; };
 		DF328D52FF9E406A81EEE51F /* TunnelConfiguration+WgQuickConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TunnelConfiguration+WgQuickConfig.swift"; sourceTree = "<group>"; };
 		30618318A0A24D558E09C96B /* String+ArrayConversion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "String+ArrayConversion.swift"; sourceTree = "<group>"; };
+		B11E91C4C81F4E2399D09A11 /* error.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = error.swift; sourceTree = "<group>"; };
+		B22E91C4C81F4E2399D09A22 /* helpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = helpers.swift; sourceTree = "<group>"; };
 		7D29FBC91F0D4F09897E2E66 /* TempoVPNProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TempoVPNProfile.swift; sourceTree = "<group>"; };
 		B2DDD3BCEC0543A6846DA31E /* HostApp Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		B1A8A566151248209D29F58E /* TempoVPN.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TempVPN.entitlements; sourceTree = "<group>"; };
@@ -93,8 +92,6 @@
 			isa = PBXGroup;
 			children = (
 				102A27ED52EE4F6CB25641F6 /* TempoVPNApp.swift */,
-				EF8EB9DB098D459D92BAE00E /* TempoVPNController.swift */,
-				0B324D687E4846678C1846CA /* TempoVPNStatusStore.swift */,
 			);
 			path = HostApp;
 			sourceTree = "<group>";
@@ -103,6 +100,8 @@
 			isa = PBXGroup;
 			children = (
 				2C1D21DD72B4436BA7ECB929 /* PacketTunnelProvider.swift */,
+				B11E91C4C81F4E2399D09A11 /* error.swift */,
+				B22E91C4C81F4E2399D09A22 /* helpers.swift */,
 				DF328D52FF9E406A81EEE51F /* TunnelConfiguration+WgQuickConfig.swift */,
 				30618318A0A24D558E09C96B /* String+ArrayConversion.swift */,
 			);
@@ -264,9 +263,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				8C64396058594AF38C798C5C /* TempoVPNApp.swift in Sources */,
-				86D3D586A65348C291795F7F /* TempoVPNController.swift in Sources */,
-				3FB6CA342B32420B82FBC8AF /* TempoVPNStatusStore.swift in Sources */,
-				A9D3818DF333427CB6F686FB /* TempoVPNProfile.swift in Host Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -275,6 +271,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				4E8063E3E1D14E0783F9F547 /* PacketTunnelProvider.swift in Sources */,
+				A11E91C4C81F4E2399D09A11 /* error.swift in PacketTunnel Sources */,
+				A22E91C4C81F4E2399D09A22 /* helpers.swift in PacketTunnel Sources */,
 				562A5DD900734819A7497204 /* TunnelConfiguration+WgQuickConfig.swift in Sources */,
 				959A1EDC7CE74B9C814A9CF4 /* String+ArrayConversion.swift in Sources */,
 				D8F6FD6D76ED46A69870BF52 /* TempoVPNProfile.swift in Extension Sources */,

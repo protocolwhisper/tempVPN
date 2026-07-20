@@ -13,22 +13,24 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var heartbeatTask: Task<Void, Never>?
     private var sessionId: String?
     private var nodeURL: String?
+    private var consecutiveHeartbeatFailures = 0
 
     override func startTunnel(
         options: [String: NSObject]?,
         completionHandler: @escaping (Error?) -> Void
     ) {
         let saved = (protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration
-        let configuration = options ?? saved
-        guard let storedConfig = configuration?[TempoVPNProviderKeys.wgQuickConfig] as? String,
+        var configuration = saved ?? [:]
+        options?.forEach { configuration[$0.key] = $0.value }
+        guard let storedConfig = configuration[TempoVPNProviderKeys.wgQuickConfig] as? String,
               let wgQuickConfig = resolvePrivateKey(in: storedConfig) else {
             completionHandler(TempoPacketTunnelError.missingWireGuardConfig)
             return
         }
 
-        let tunnelName = configuration?[TempoVPNProviderKeys.tunnelName] as? String ?? "TempVPN"
-        sessionId = configuration?[TempoVPNProviderKeys.sessionId] as? String
-        nodeURL = configuration?[TempoVPNProviderKeys.nodeURL] as? String
+        let tunnelName = configuration[TempoVPNProviderKeys.tunnelName] as? String ?? "TempVPN"
+        sessionId = configuration[TempoVPNProviderKeys.sessionId] as? String
+        nodeURL = configuration[TempoVPNProviderKeys.nodeURL] as? String
 
 #if canImport(WireGuardKit)
         do {
@@ -82,7 +84,24 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(30))
                 guard !Task.isCancelled else { return }
-                await postSessionAction("heartbeat", sessionId: sessionId, nodeURL: nodeURL)
+                let heartbeat = await postSessionAction(
+                    "heartbeat",
+                    sessionId: sessionId,
+                    nodeURL: nodeURL
+                )
+                switch heartbeat {
+                case .active:
+                    self.consecutiveHeartbeatFailures = 0
+                case .inactive:
+                    self.cancelTunnelWithError(TempoPacketTunnelError.sessionUnavailable)
+                    return
+                case .unavailable:
+                    self.consecutiveHeartbeatFailures += 1
+                    if self.consecutiveHeartbeatFailures >= 3 {
+                        self.cancelTunnelWithError(TempoPacketTunnelError.sessionUnavailable)
+                        return
+                    }
+                }
             }
         }
     }
@@ -93,18 +112,36 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             return
         }
         Task {
-            await postSessionAction("pause", sessionId: sessionId, nodeURL: nodeURL)
+            _ = await postSessionAction("pause", sessionId: sessionId, nodeURL: nodeURL)
             completionHandler()
         }
     }
 
-    private func postSessionAction(_ action: String, sessionId: String, nodeURL: String) async {
-        guard let url = URL(
-            string: "\(nodeURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")))/sessions/\(sessionId)/\(action)"
-        ) else { return }
+    private func postSessionAction(
+        _ action: String,
+        sessionId: String,
+        nodeURL: String
+    ) async -> SessionActionResult {
+        guard let url = sessionActionURL(
+            nodeURL: nodeURL,
+            sessionId: sessionId,
+            action: action
+        ) else { return .unavailable }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        _ = try? await URLSession.shared.data(for: request)
+        request.timeoutInterval = 5
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse,
+              let http = response as? HTTPURLResponse else { return .unavailable }
+        guard (200..<300).contains(http.statusCode) else {
+            return (400..<500).contains(http.statusCode) ? .inactive : .unavailable
+        }
+        if action == "heartbeat",
+           let state = sessionState(from: data),
+           state != "active" {
+            return .inactive
+        }
+        return .active
     }
 
     private func resolvePrivateKey(in configuration: String) -> String? {
@@ -134,19 +171,5 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
               let data = result as? Data else { return nil }
         let key = data.base64EncodedString()
         return configuration.replacingOccurrences(of: "keychain:\(account)", with: key)
-    }
-}
-
-enum TempoPacketTunnelError: LocalizedError {
-    case missingWireGuardConfig
-    case wireGuardKitMissing
-
-    var errorDescription: String? {
-        switch self {
-        case .missingWireGuardConfig:
-            return "The packet tunnel was started without a WireGuard configuration."
-        case .wireGuardKitMissing:
-            return "WireGuardKit is not linked into the Packet Tunnel Provider target."
-        }
     }
 }

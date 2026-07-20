@@ -1,61 +1,102 @@
-# TempVPN Apple Networking
+# TempVPN on macOS
 
-This directory contains the native macOS TempVPN app, command-line controller,
-and Packet Tunnel Provider shown in macOS System Settings.
+The macOS product is native and agent-only. It has no window, Dock icon, menu
+bar item, or graphical controls:
 
-The current Rust client uses `wg-quick`, which creates a working `utun`
-WireGuard tunnel but does not register a macOS VPN service. This scaffold moves
-the macOS-facing connection lifecycle into Apple's VPN APIs:
-
-- `HostApp/TempoVPNController.swift` creates or updates a `NETunnelProvider`
-  VPN profile named `TempVPN` and starts it with a temporary WireGuard config.
-- `CLI/` builds `tempvpnctl`, which selects nodes, imports paid-session JSON,
-  stores private keys in the shared Keychain group, and controls the VPN profile.
-- `PacketTunnel/PacketTunnelProvider.swift` hands the resolved configuration to
-  WireGuardKit, sends heartbeats, and pauses unused time when stopped.
-- `Shared/TempoVPNProfile.swift` contains the small shared model and option keys
-  used by both targets.
-- `HostApp/TempoVPNStatusStore.swift` reads the shared Rust status file so a
-  menu bar companion can show remaining connected time and current node state.
-
-`TempVPN.xcodeproj` contains a minimal macOS menu bar host app target and a
-Packet Tunnel Provider extension target. The host app embeds the extension and
-uses the Network Extension entitlement with `packet-tunnel-provider`.
-
-WireGuardKit is vendored at `Vendor/wireguard-apple` and linked into
-`TempVPNPacketTunnel` as a local Swift Package. The vendored copy carries two
-small compatibility patches for this toolchain:
-
-- `Package.swift` uses `swift-tools-version:5.5` so SwiftPM accepts the package
-  platform declarations.
-- `WireGuardKitC.h` imports `<sys/types.h>` before using BSD integer typedefs
-  required by the latest modular macOS SDK.
-
-WireGuardKit also requires its Go backend archive, `libwg-go.a`. The packet
-tunnel target has a build phase that runs WireGuard's own Makefile to produce
-that archive. Install Go before building the Xcode project.
-
-The payment/session flow now separates purchase from connected time. `POST
-/sessions` creates a paid usage balance, `POST /sessions/{id}/connect` starts
-burning that balance and returns the assigned IP, server public key, and
-endpoint, and `POST /sessions/{id}/pause` stops burning time. After connect,
-render the normal WireGuard config and call `TempoVPNController.connect(profile:)`.
-macOS then owns the VPN lifecycle, so the connection appears in System Settings
-instead of only existing as a `wg-quick` interface.
-
-The Rust `vpn-client` is Linux-only and is not part of the macOS product path.
-
-Build and sign the CLI with the same team and shared Keychain group as the app:
-
-```bash
-CODE_SIGN_IDENTITY="Developer ID Application: Example (TEAMID)" \
-  ./clients/macos/build-tempvpnctl.sh
+```text
+Agent -> tempvpnctl -> NETunnelProviderManager
+                         |
+                         v
+                headless TempVPN.app
+                         |
+                         v
+              Packet Tunnel Provider
+                         |
+                         v
+                    WireGuardKit
 ```
 
-## Distribution
+`TempVPN.app` is still technically required because macOS only installs Packet
+Tunnel extensions from a containing application bundle. Its `LSUIElement` flag
+is enabled and its executable exits immediately after LaunchServices registers
+the extension. The agent interacts exclusively with `tempvpnctl`, while the
+resulting `TempVPN` profile is visible and controllable in System Settings.
 
-For production macOS users, distribute `TempVPN.app` in a signed and notarized
-DMG. A raw binary or CLI-only release is useful for agents and development, but
-it cannot deliver the normal VPN-app experience: one-time profile approval,
-System Settings integration, menu bar status, and later connects without admin
-prompts all require the signed app plus embedded Packet Tunnel Provider.
+No Homebrew WireGuard commands are used by the macOS client. Linux remains a
+separate Rust client that uses `wg`/`wg-quick`.
+
+## Agent workflow
+
+```bash
+export VPN_CLIENT_REGISTRY_URL="https://registry.example.com"
+tempvpnctl select --region eu-west --json
+
+mppx "$SELECTED_NODE_URL/sessions" \
+  --account main \
+  --json-body '{"duration_seconds":1800}' \
+  --silent > /tmp/tempvpn-session.json
+
+tempvpnctl connect \
+  --session-response /tmp/tempvpn-session.json \
+  --node-url "$SELECTED_NODE_URL" \
+  --json
+
+tempvpnctl status --json
+tempvpnctl disconnect --json
+```
+
+`tempvpnctl` generates an X25519/WireGuard key, stores the private key in the
+shared Keychain access group, and sends only the public key to the selected
+node. The Packet Tunnel extension retrieves the private key internally, starts
+WireGuardKit, heartbeats the paid session every 30 seconds, and pauses unused
+time when the tunnel stops.
+
+Payment stays outside the client. The agent must pay the exact selected node
+with an already configured `mppx` account and pass that node's JSON response to
+`tempvpnctl`. The CLI rejects a response bound to a different node.
+
+## Build before Apple signing
+
+Prerequisites are Xcode and Go. Build both products without installing them:
+
+```bash
+./clients/macos/build-macos-products.sh
+```
+
+Outputs:
+
+```text
+target/TempVPN.app
+target/tempvpnctl
+```
+
+An unsigned build verifies compilation but cannot install or activate the
+Packet Tunnel extension.
+
+## Signing later
+
+After joining the Apple Developer Program, configure the application and
+extension identifiers for your team, then build with the same team and signing
+identity for both products:
+
+```bash
+export APPLE_DEVELOPMENT_TEAM="TEAMID"
+export CODE_SIGN_IDENTITY="Apple Development: Your Name (TEAMID)"
+./clients/macos/build-macos-products.sh
+```
+
+The application, extension, and CLI share the Keychain group
+`TEAMID.com.protocolwhisper.tempvpn.shared`. Production downloads additionally
+need Developer ID distribution signing and notarization.
+
+Install only signed products. The installer deliberately refuses unsigned
+artifacts and does not invoke `sudo` itself:
+
+```bash
+sudo ./clients/macos/install-tempvpnctl.sh
+```
+
+The installer places the invisible host in `/Applications/TempVPN.app`, the
+agent command in `/usr/local/bin/tempvpnctl`, and launches the host once to
+register the extension. macOS then requests one-time VPN approval on the first
+connection.

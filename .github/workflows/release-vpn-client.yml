@@ -18,6 +18,27 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  macos-client-test:
+    name: Test native headless macOS client
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Test Swift package
+        working-directory: tempvpn
+        run: swift test --package-path clients/macos
+
+      - name: Build agent controller
+        working-directory: tempvpn
+        run: |
+          ./clients/macos/build-tempvpnctl.sh
+          ./target/tempvpnctl --version
+
+      - name: Build headless app and Packet Tunnel
+        working-directory: tempvpn
+        run: ./clients/macos/build-headless-app.sh
+
   build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
@@ -29,18 +50,6 @@ jobs:
             target: x86_64-unknown-linux-musl
             archive_ext: tar.gz
             exe: ""
-          - os: macos-14
-            target: x86_64-apple-darwin
-            archive_ext: tar.gz
-            exe: ""
-          - os: macos-14
-            target: aarch64-apple-darwin
-            archive_ext: tar.gz
-            exe: ""
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            archive_ext: zip
-            exe: ".exe"
 
     steps:
       - name: Checkout
@@ -54,14 +63,14 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: vpnnode
+          workspaces: tempvpn
 
       - name: Install Linux musl linker
         if: contains(matrix.target, 'unknown-linux-musl')
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Build vpn-client
-        working-directory: vpnnode
+        working-directory: tempvpn
         run: cargo build --locked --release -p vpn-client-cli --target ${{ matrix.target }}
 
       - name: Package binary
@@ -73,8 +82,8 @@ jobs:
           asset="vpn-client-${{ matrix.target }}.${{ matrix.archive_ext }}"
 
           mkdir -p dist package
-          cp "vpnnode/target/${{ matrix.target }}/release/${binary}" "package/${binary}"
-          cp vpnnode/README.md package/README.md
+          cp "tempvpn/target/${{ matrix.target }}/release/${binary}" "package/${binary}"
+          cp tempvpn/README.md package/README.md
 
           if [[ "${asset}" == *.zip ]]; then
             7z a "dist/${asset}" ./package/*
@@ -92,7 +101,7 @@ jobs:
   release:
     name: Publish GitHub release
     runs-on: ubuntu-latest
-    needs: build
+    needs: [build, macos-client-test]
 
     steps:
       - name: Download artifacts

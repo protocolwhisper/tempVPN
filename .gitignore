@@ -2,8 +2,10 @@ cache/
 dist/
 out/
 target/
+DerivedData/
+tempvpn/clients/macos/DerivedData/
 .env
-vpnnode/vpn-node.toml
-vpnnode/vpn-client.toml
-vpnnode/vpn-node.mock.toml
-vpnnode/client.conf
+tempvpn/vpn-node.toml
+tempvpn/vpn-client.toml
+tempvpn/vpn-node.mock.toml
+tempvpn/client.conf
