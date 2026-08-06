@@ -29,6 +29,9 @@ pub enum Error {
     #[error("mpp setup failed: {0}")]
     Mpp(String),
 
+    #[error("payment channel store failed: {0}")]
+    Store(String),
+
     #[error("invalid request: {0}")]
     InvalidRequest(String),
 

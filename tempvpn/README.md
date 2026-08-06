@@ -59,6 +59,8 @@ The Linux server component. It exposes:
 | `POST /sessions/:id/pause` | Pauses a paid balance, removes the WireGuard peer, and stops consuming time. |
 | `POST /sessions/:id/heartbeat` | Updates connected-time accounting for active sessions. |
 | `GET /sessions/:id/status` | Public paid-session status lookup for remaining seconds and grace deadline. |
+| `GET /sessions/stream` | Tempo TIP-1034 Session v2 authenticated SSE control stream for metered access. |
+| `HEAD /sessions/stream` | Session v2 open, voucher, top-up, and close management operations. |
 | `GET /sessions/:id` | Administrative session lookup; not used by the skill. |
 | `DELETE /sessions/:id` | Administrative removal; prohibited in the normal paid client flow. |
 
@@ -134,7 +136,50 @@ VPN_NODE_ADMIN_TOKEN="replace-with-a-server-only-secret" \
 
 Before deployment, configure WireGuard forwarding/NAT, replace every example
 placeholder, keep the admin token out of client environments, and terminate the
-HTTP API with TLS. The current in-memory session store is not crash-persistent.
+HTTP API with TLS. The fixed-price `POST /sessions` flow remains available while
+streaming is introduced.
+
+### Tempo Session v2 streaming
+
+The streaming server is all Rust. It attaches a local TIP-1034 v2 adapter to
+Rust `mpp`'s `SessionMethod`; `clap` only parses daemon command-line arguments.
+No TypeScript or `mppx` runtime is embedded in the node. A client may use an
+MPP-compatible client implementation, including `mppx`, but the verifier,
+accounting store, SSE meter, and WireGuard lifecycle all run in
+`vpn-node-daemon`.
+
+For a local Moderato test, add the streaming fields from
+`configs/vpn-node.example.toml`, keep `mpp_streaming_mode = "development"` and
+`mpp_session_store = "memory"`, provide `MPP_SECRET_KEY`, and provide a testnet
+close key in the process environment:
+
+```bash
+MPP_SECRET_KEY="replace-with-an-hmac-secret" \
+VPN_NODE_MPP_SESSION_CLOSE_PRIVATE_KEY="0x..." \
+  cargo run -p vpn-node-daemon -- --config vpn-node.toml
+```
+
+An unpaid `GET` or `HEAD` request receives a 402 challenge containing method
+`tempo`, intent `session`, and `sessionProtocol: "v2"`. The request's WireGuard
+public key and safety duration are HMAC-bound into the challenge. After a valid
+funded credential, `GET` returns connection details over SSE. Each completed
+billing interval consumes one atomic unit; exhaustion disables the peer and
+emits `payment-need-voucher`, and a newer verified voucher resumes the same
+logical session without billing the paused period.
+
+Production mode fails at startup unless `mpp_session_store = "sqlite"` and
+`mpp_session_sqlite_path` is configured. Put the database on durable storage
+whose filesystem provides working SQLite locks to every process serving the
+same MPP realm. SQLite immediate transactions protect cumulative voucher
+monotonicity, spend, replay state, and the single active stream lease. Startup
+expires stale leases and removes their recorded WireGuard peers before payment
+traffic is accepted. Keep the close key in a secret manager or environment
+injection, never in source control or logs.
+
+To roll back streaming, set `mpp_streaming_enabled = false` and restart. The
+streaming route will not be registered and `POST /sessions` continues to work.
+Retain the SQLite database even after rollback so accepted voucher and replay
+state remain available for settlement or a later restart.
 
 ## Safety and lifecycle
 
@@ -152,4 +197,5 @@ HTTP API with TLS. The current in-memory session store is not crash-persistent.
 
 - Windows client use.
 - Persistent daemon sessions across crashes.
+- Restoring an interrupted client's local tunnel automatically after a daemon crash.
 - Direct public production exposure without a TLS reverse proxy.

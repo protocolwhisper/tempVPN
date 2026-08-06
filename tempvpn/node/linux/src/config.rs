@@ -1,6 +1,9 @@
-use std::{env, net::SocketAddr, path::PathBuf};
+use std::{env, net::SocketAddr, path::PathBuf, str::FromStr};
 
+use alloy::primitives::Address;
+use alloy::signers::local::PrivateKeySigner;
 use clap::Parser;
+use mpp::protocol::methods::tempo::PRECOMPILE_MAX_CUMULATIVE_AMOUNT;
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
@@ -10,6 +13,36 @@ const DEFAULT_MPP_RPC_URL: &str = "https://rpc.moderato.tempo.xyz";
 const DEFAULT_MPP_REALM: &str = "localhost:8080";
 const DEFAULT_MPP_PAYMENT_CURRENCY: &str = "0x20c0000000000000000000000000000000000000";
 const DEFAULT_MPP_PAYMENT_RECIPIENT: &str = "0xB01E80a8CD7C72589f30D2004aeb60937a2150d3";
+const DEFAULT_MPP_CHAIN_ID: u64 = 42_431;
+const DEFAULT_MPP_SESSION_RESERVE: &str = "0x4d50500000000000000000000000000000000000";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamingMode {
+    Development,
+    Production,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChannelStoreConfig {
+    Memory,
+    Sqlite(PathBuf),
+}
+
+#[derive(Clone)]
+pub struct StreamingConfig {
+    pub enabled: bool,
+    pub mode: StreamingMode,
+    pub chain_id: u64,
+    pub reserve: Address,
+    pub operator: Address,
+    pub unit_amount: u128,
+    pub billing_interval_seconds: u64,
+    pub suggested_reserve: u128,
+    pub min_voucher_delta: u128,
+    pub grace_period_seconds: u64,
+    pub close_signer: Option<PrivateKeySigner>,
+    pub store: ChannelStoreConfig,
+}
 
 #[derive(Debug, Parser)]
 pub struct Args {
@@ -17,7 +50,7 @@ pub struct Args {
     pub config: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Config {
     pub bind_addr: SocketAddr,
     pub admin_token: String,
@@ -46,9 +79,10 @@ pub struct Config {
     pub mpp_realm: String,
     pub mpp_payment_currency: String,
     pub mpp_payment_recipient: String,
+    pub streaming: StreamingConfig,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 struct FileConfig {
     bind_addr: Option<SocketAddr>,
     admin_token: Option<String>,
@@ -77,6 +111,19 @@ struct FileConfig {
     mpp_realm: Option<String>,
     mpp_payment_currency: Option<String>,
     mpp_payment_recipient: Option<String>,
+    mpp_streaming_enabled: Option<bool>,
+    mpp_streaming_mode: Option<String>,
+    mpp_chain_id: Option<u64>,
+    mpp_session_reserve: Option<String>,
+    mpp_session_operator: Option<String>,
+    mpp_session_unit_amount: Option<u128>,
+    mpp_session_billing_interval_seconds: Option<u64>,
+    mpp_session_suggested_reserve: Option<u128>,
+    mpp_session_min_voucher_delta: Option<u128>,
+    mpp_session_grace_period_seconds: Option<u64>,
+    mpp_session_close_private_key: Option<String>,
+    mpp_session_store: Option<String>,
+    mpp_session_sqlite_path: Option<PathBuf>,
 }
 
 impl Config {
@@ -96,6 +143,7 @@ impl Config {
             None => FileConfig::default(),
         };
 
+        let streaming_file = file.clone();
         let bind_addr = env_or("VPN_NODE_BIND_ADDR", file.bind_addr, "0.0.0.0:8080")?;
         let admin_token = env_or_required("VPN_NODE_ADMIN_TOKEN", file.admin_token)?;
         let node_id = env_or_default("VPN_NODE_ID", file.node_id, "default");
@@ -189,6 +237,7 @@ impl Config {
             file.mpp_payment_recipient,
             DEFAULT_MPP_PAYMENT_RECIPIENT,
         );
+        let streaming = load_streaming_config(&streaming_file, &mpp_payment_recipient)?;
 
         Ok(Self {
             bind_addr,
@@ -218,8 +267,187 @@ impl Config {
             mpp_realm,
             mpp_payment_currency,
             mpp_payment_recipient,
+            streaming,
         })
     }
+}
+
+fn load_streaming_config(file: &FileConfig, recipient: &str) -> Result<StreamingConfig> {
+    let enabled = env_or(
+        "VPN_NODE_MPP_STREAMING_ENABLED",
+        file.mpp_streaming_enabled,
+        "false",
+    )?;
+    let mode = match env_or_default(
+        "VPN_NODE_MPP_STREAMING_MODE",
+        file.mpp_streaming_mode.clone(),
+        "development",
+    )
+    .to_ascii_lowercase()
+    .as_str()
+    {
+        "development" => StreamingMode::Development,
+        "production" => StreamingMode::Production,
+        other => {
+            return Err(Error::InvalidConfig(format!(
+                "VPN_NODE_MPP_STREAMING_MODE must be development or production, got {other}"
+            )))
+        }
+    };
+
+    let chain_id = env_or(
+        "VPN_NODE_MPP_CHAIN_ID",
+        file.mpp_chain_id,
+        &DEFAULT_MPP_CHAIN_ID.to_string(),
+    )?;
+    let reserve_raw = env_or_default(
+        "VPN_NODE_MPP_SESSION_RESERVE",
+        file.mpp_session_reserve.clone(),
+        DEFAULT_MPP_SESSION_RESERVE,
+    );
+    let operator_raw = env_or_default(
+        "VPN_NODE_MPP_SESSION_OPERATOR",
+        file.mpp_session_operator.clone(),
+        recipient,
+    );
+    let unit_amount = env_or(
+        "VPN_NODE_MPP_SESSION_UNIT_AMOUNT",
+        file.mpp_session_unit_amount,
+        "1000",
+    )?;
+    let billing_interval_seconds = env_or(
+        "VPN_NODE_MPP_SESSION_BILLING_INTERVAL_SECONDS",
+        file.mpp_session_billing_interval_seconds,
+        "60",
+    )?;
+    let suggested_reserve = env_or(
+        "VPN_NODE_MPP_SESSION_SUGGESTED_RESERVE",
+        file.mpp_session_suggested_reserve,
+        "10000",
+    )?;
+    let min_voucher_delta = env_or(
+        "VPN_NODE_MPP_SESSION_MIN_VOUCHER_DELTA",
+        file.mpp_session_min_voucher_delta,
+        "1000",
+    )?;
+    let grace_period_seconds = env_or(
+        "VPN_NODE_MPP_SESSION_GRACE_PERIOD_SECONDS",
+        file.mpp_session_grace_period_seconds,
+        "30",
+    )?;
+    let close_key = env::var("VPN_NODE_MPP_SESSION_CLOSE_PRIVATE_KEY")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| file.mpp_session_close_private_key.clone());
+    let store_kind = env_or_default(
+        "VPN_NODE_MPP_SESSION_STORE",
+        file.mpp_session_store.clone(),
+        "memory",
+    );
+    let sqlite_path = env::var_os("VPN_NODE_MPP_SESSION_SQLITE_PATH")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| file.mpp_session_sqlite_path.clone());
+
+    let reserve = parse_address("VPN_NODE_MPP_SESSION_RESERVE", &reserve_raw)?;
+    let operator = parse_address("VPN_NODE_MPP_SESSION_OPERATOR", &operator_raw)?;
+    let close_signer = close_key
+        .as_deref()
+        .map(|key| {
+            PrivateKeySigner::from_str(key).map_err(|_| {
+                Error::InvalidConfig(
+                    "VPN_NODE_MPP_SESSION_CLOSE_PRIVATE_KEY is not a valid private key".into(),
+                )
+            })
+        })
+        .transpose()?;
+    let store = match store_kind.to_ascii_lowercase().as_str() {
+        "memory" => ChannelStoreConfig::Memory,
+        "sqlite" => ChannelStoreConfig::Sqlite(sqlite_path.ok_or_else(|| {
+            Error::InvalidConfig(
+                "VPN_NODE_MPP_SESSION_SQLITE_PATH is required for the sqlite store".into(),
+            )
+        })?),
+        other => {
+            return Err(Error::InvalidConfig(format!(
+                "VPN_NODE_MPP_SESSION_STORE must be memory or sqlite, got {other}"
+            )))
+        }
+    };
+
+    let config = StreamingConfig {
+        enabled,
+        mode,
+        chain_id,
+        reserve,
+        operator,
+        unit_amount,
+        billing_interval_seconds,
+        suggested_reserve,
+        min_voucher_delta,
+        grace_period_seconds,
+        close_signer,
+        store,
+    };
+    validate_streaming_config(&config)?;
+    Ok(config)
+}
+
+fn parse_address(name: &str, value: &str) -> Result<Address> {
+    value
+        .parse()
+        .map_err(|_| Error::InvalidConfig(format!("{name} is not a valid address")))
+}
+
+fn validate_streaming_config(config: &StreamingConfig) -> Result<()> {
+    if !config.enabled {
+        return Ok(());
+    }
+    if config.chain_id == 0 {
+        return Err(Error::InvalidConfig(
+            "VPN_NODE_MPP_CHAIN_ID must be greater than zero".into(),
+        ));
+    }
+    if config.reserve == Address::ZERO || config.operator == Address::ZERO {
+        return Err(Error::InvalidConfig(
+            "streaming reserve and operator addresses must be non-zero".into(),
+        ));
+    }
+    if config.unit_amount == 0 || config.unit_amount > PRECOMPILE_MAX_CUMULATIVE_AMOUNT {
+        return Err(Error::InvalidConfig(
+            "streaming unit amount must fit Tempo's uint96 reserve amount".into(),
+        ));
+    }
+    if config.suggested_reserve <= config.unit_amount
+        || config.suggested_reserve > PRECOMPILE_MAX_CUMULATIVE_AMOUNT
+    {
+        return Err(Error::InvalidConfig(
+            "suggested reserve must cover more than one unit and fit uint96".into(),
+        ));
+    }
+    if config.min_voucher_delta > PRECOMPILE_MAX_CUMULATIVE_AMOUNT {
+        return Err(Error::InvalidConfig(
+            "minimum voucher delta must fit uint96".into(),
+        ));
+    }
+    if config.billing_interval_seconds == 0 || config.grace_period_seconds == 0 {
+        return Err(Error::InvalidConfig(
+            "billing interval and grace period must be greater than zero".into(),
+        ));
+    }
+    if config.close_signer.is_none() {
+        return Err(Error::InvalidConfig(
+            "VPN_NODE_MPP_SESSION_CLOSE_PRIVATE_KEY is required when streaming is enabled".into(),
+        ));
+    }
+    if config.mode == StreamingMode::Production
+        && !matches!(config.store, ChannelStoreConfig::Sqlite(_))
+    {
+        return Err(Error::InvalidConfig(
+            "production streaming requires VPN_NODE_MPP_SESSION_STORE=sqlite".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn env_var(name: &'static str) -> Option<String> {

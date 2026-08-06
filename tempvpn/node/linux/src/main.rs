@@ -5,14 +5,16 @@ mod helpers;
 mod ip_allocator;
 mod registry;
 mod routes;
+mod session_v2;
 mod sessions;
 mod wireguard;
 
+use alloy::{network::EthereumWallet, providers::ProviderBuilder};
 use clap::Parser;
 use mpp::server::{axum::ChargeChallenger, tempo, Mpp, TempoConfig};
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tracing::info;
+use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::{
@@ -20,8 +22,15 @@ use crate::{
     config::{Args, Config},
     error::{Error, Result},
     routes::{router, AppState},
+    session_v2::{
+        chain::TempoReserveChain,
+        method::{SessionV2Config, TempoSessionV2Method},
+        store::SessionStore,
+        StreamingPayments,
+    },
     sessions::Sessions,
 };
+use tempo_alloy::TempoNetwork;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -37,6 +46,14 @@ async fn main() -> Result<()> {
     let sessions = Sessions::new(&config)?;
     let challenger = create_mpp_challenger(&config)?;
     let registry = registry::Registry::default();
+    let streaming = create_streaming_payments(&config, sessions.clone()).await?;
+    if let Some(streaming) = streaming.clone() {
+        spawn_lease_reaper(
+            streaming,
+            sessions.clone(),
+            config.streaming.grace_period_seconds,
+        );
+    }
     spawn_expiry_loop(sessions.clone(), config.sweep_interval_seconds);
     let registration = registry::spawn_registration(config.clone());
 
@@ -46,6 +63,7 @@ async fn main() -> Result<()> {
         sessions: sessions.clone(),
         challenger,
         registry,
+        streaming,
     });
 
     info!(addr = %config.bind_addr, "vpn-node-daemon listening");
@@ -82,4 +100,179 @@ fn create_mpp_challenger(config: &Config) -> Result<Arc<dyn ChargeChallenger>> {
     .map_err(|err| Error::Mpp(err.to_string()))?;
 
     Ok(Arc::new(mpp) as Arc<dyn ChargeChallenger>)
+}
+
+async fn create_streaming_payments(
+    config: &Config,
+    sessions: Arc<Sessions>,
+) -> Result<Option<Arc<StreamingPayments>>> {
+    if !config.streaming.enabled {
+        return Ok(None);
+    }
+
+    let signer =
+        config.streaming.close_signer.clone().ok_or_else(|| {
+            Error::InvalidConfig("streaming close signer was not validated".into())
+        })?;
+    let payee = config
+        .mpp_payment_recipient
+        .parse()
+        .map_err(|_| Error::InvalidConfig("MPP recipient is not an address".into()))?;
+    let token = config
+        .mpp_payment_currency
+        .parse()
+        .map_err(|_| Error::InvalidConfig("MPP currency is not an address".into()))?;
+    if signer.address() != payee
+        && (config.streaming.operator == alloy::primitives::Address::ZERO
+            || signer.address() != config.streaming.operator)
+    {
+        return Err(Error::InvalidConfig(
+            "streaming close signer must match the configured recipient or non-zero operator"
+                .into(),
+        ));
+    }
+    let rpc_url = config
+        .mpp_rpc_url
+        .parse()
+        .map_err(|error| Error::InvalidConfig(format!("invalid Tempo RPC URL: {error}")))?;
+    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+        .wallet(EthereumWallet::from(signer.clone()))
+        .connect_http(rpc_url);
+    let chain = Arc::new(TempoReserveChain::new(
+        provider,
+        config.streaming.reserve,
+        config.streaming.chain_id,
+        signer.address(),
+    ));
+    let store = SessionStore::open(&config.streaming.store).await?;
+    if config.streaming.mode == config::StreamingMode::Production && !store.is_durable() {
+        return Err(Error::InvalidConfig(
+            "production Session v2 store did not initialize as durable".into(),
+        ));
+    }
+    let now_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .min(i64::MAX as u64) as i64;
+    for (channel_id, lease) in store
+        .reconcile_startup_leases(now_unix)
+        .await
+        .map_err(|error| Error::Store(error.to_string()))?
+    {
+        let cleanup_owner = format!("reaper_{}", uuid::Uuid::new_v4().simple());
+        let claimed = store
+            .claim_expired_lease(
+                &channel_id,
+                &lease.owner_id,
+                &cleanup_owner,
+                now_unix,
+                now_unix.saturating_add(60),
+            )
+            .await
+            .map_err(|error| Error::Store(error.to_string()))?;
+        if !claimed {
+            continue;
+        }
+        sessions
+            .disable_peer_by_public_key(&lease.client_public_key)
+            .await?;
+        store
+            .release_lease(&channel_id, &cleanup_owner)
+            .await
+            .map_err(|error| Error::Store(error.to_string()))?;
+    }
+    let method = TempoSessionV2Method::new(
+        chain,
+        store.clone(),
+        SessionV2Config {
+            reserve: config.streaming.reserve,
+            chain_id: config.streaming.chain_id,
+            operator: config.streaming.operator,
+            payee,
+            token,
+            unit_amount: config.streaming.unit_amount,
+            min_voucher_delta: config.streaming.min_voucher_delta,
+        },
+    );
+    let mpp = Mpp::create(
+        tempo(TempoConfig {
+            recipient: config.mpp_payment_recipient.as_str(),
+        })
+        .currency(config.mpp_payment_currency.as_str())
+        .rpc_url(config.mpp_rpc_url.as_str())
+        .chain_id(config.streaming.chain_id)
+        .realm(config.mpp_realm.as_str()),
+    )
+    .map_err(|error| Error::Mpp(error.to_string()))?
+    .with_session_method(method);
+
+    Ok(Some(Arc::new(StreamingPayments { mpp, store })))
+}
+
+fn spawn_lease_reaper(
+    streaming: Arc<StreamingPayments>,
+    sessions: Arc<Sessions>,
+    interval_seconds: u64,
+) {
+    tokio::spawn(async move {
+        let mut interval =
+            tokio::time::interval(std::time::Duration::from_secs(interval_seconds.max(1)));
+        loop {
+            interval.tick().await;
+            let now_unix = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+                .min(i64::MAX as u64) as i64;
+            let leases = match streaming.store.reconcile_startup_leases(now_unix).await {
+                Ok(leases) => leases,
+                Err(error) => {
+                    error!(error = %error, "failed to scan expired Session v2 leases");
+                    continue;
+                }
+            };
+            for (channel_id, lease) in leases {
+                let cleanup_owner = format!("reaper_{}", uuid::Uuid::new_v4().simple());
+                let claimed = match streaming
+                    .store
+                    .claim_expired_lease(
+                        &channel_id,
+                        &lease.owner_id,
+                        &cleanup_owner,
+                        now_unix,
+                        now_unix.saturating_add(60),
+                    )
+                    .await
+                {
+                    Ok(claimed) => claimed,
+                    Err(error) => {
+                        error!(channel_id, error = %error, "failed to claim expired Session v2 lease");
+                        continue;
+                    }
+                };
+                if !claimed {
+                    continue;
+                }
+                if let Err(error) = sessions
+                    .disable_peer_by_public_key(&lease.client_public_key)
+                    .await
+                {
+                    error!(
+                        channel_id,
+                        error = %error,
+                        "failed to remove peer for expired Session v2 lease"
+                    );
+                    continue;
+                }
+                if let Err(error) = streaming
+                    .store
+                    .release_lease(&channel_id, &cleanup_owner)
+                    .await
+                {
+                    error!(channel_id, error = %error, "failed to release expired Session v2 lease");
+                }
+            }
+        }
+    });
 }

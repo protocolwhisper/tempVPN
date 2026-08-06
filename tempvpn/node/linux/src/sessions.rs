@@ -270,6 +270,70 @@ impl Sessions {
         Ok(self.get(session_id).await)
     }
 
+    /// Pause a metered stream while retaining its peer binding for reconnection.
+    pub async fn pause_for_stream(&self, session_id: &str) -> Result<Option<Session>> {
+        let removed_public_key = {
+            let mut store = self.store.lock().await;
+            let Some(record) = store.sessions.get_mut(session_id) else {
+                return Ok(None);
+            };
+            let now = Utc::now();
+            refresh_usage(
+                &mut record.session,
+                now,
+                self.stale_timeout_seconds,
+                UsageRefreshMode::Now,
+            );
+            record.session.state = if record.session.remaining_seconds == 0 {
+                SessionState::Expired
+            } else {
+                SessionState::Paused
+            };
+            record.session.connected_at = None;
+            record.session.last_heartbeat_at = None;
+            record.session.client_public_key.clone()
+        };
+
+        if let Some(public_key) = removed_public_key {
+            self.wireguard.remove_peer(&public_key).await?;
+        }
+        Ok(self.get(session_id).await)
+    }
+
+    /// Re-enable a paused metered stream using its previously bound peer key.
+    pub async fn resume_for_stream(&self, session_id: &str) -> Result<Option<Session>> {
+        let public_key = {
+            let store = self.store.lock().await;
+            let Some(record) = store.sessions.get(session_id) else {
+                return Ok(None);
+            };
+            record.session.client_public_key.clone()
+        };
+        let Some(public_key) = public_key else {
+            return Ok(None);
+        };
+        self.connect(session_id, public_key).await.map(Some)
+    }
+
+    pub async fn is_active(&self, session_id: &str) -> bool {
+        self.get(session_id)
+            .await
+            .is_some_and(|session| session.state == SessionState::Active)
+    }
+
+    pub async fn disable_peer_by_public_key(&self, public_key: &str) -> Result<()> {
+        self.wireguard.remove_peer(public_key).await?;
+        let mut store = self.store.lock().await;
+        for record in store.sessions.values_mut() {
+            if record.session.client_public_key.as_deref() == Some(public_key) {
+                record.session.state = SessionState::Paused;
+                record.session.connected_at = None;
+                record.session.last_heartbeat_at = None;
+            }
+        }
+        Ok(())
+    }
+
     pub async fn remove(&self, session_id: &str) -> Result<Option<Session>> {
         let removed = {
             let mut store = self.store.lock().await;
@@ -496,6 +560,24 @@ mod tests {
             mpp_realm: "localhost:8080".to_string(),
             mpp_payment_currency: "currency".to_string(),
             mpp_payment_recipient: "recipient".to_string(),
+            streaming: crate::config::StreamingConfig {
+                enabled: false,
+                mode: crate::config::StreamingMode::Development,
+                chain_id: 42_431,
+                reserve: "0x4d50500000000000000000000000000000000000"
+                    .parse()
+                    .unwrap(),
+                operator: "0x0000000000000000000000000000000000000001"
+                    .parse()
+                    .unwrap(),
+                unit_amount: 1_000,
+                billing_interval_seconds: 60,
+                suggested_reserve: 10_000,
+                min_voucher_delta: 500,
+                grace_period_seconds: 30,
+                close_signer: None,
+                store: crate::config::ChannelStoreConfig::Memory,
+            },
         }
     }
 
