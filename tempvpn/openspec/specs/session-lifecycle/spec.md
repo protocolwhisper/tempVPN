@@ -9,55 +9,51 @@ activation, pause, status reporting, expiration, and administrative removal.
 
 ### Requirement: Paid session creation
 
-The node SHALL create a session only after the `POST /sessions` request satisfies
-the node's Tempo MPP charge. The requested duration SHALL be at least one second
-and SHALL NOT exceed the node's configured maximum duration.
+The selected logical node SHALL create a durable session only after
+`POST /sessions` satisfies its Tempo MPP charge. The requested duration SHALL
+be at least one second and SHALL NOT exceed the configured maximum duration.
 
 #### Scenario: Valid paid request creates a paused balance
 
-- **GIVEN** a paid request with a duration within the configured bounds
-- **WHEN** the node creates the session
-- **THEN** it returns a unique `sess_`-prefixed session identifier
-- **AND** it records the selected node URL, total seconds, remaining seconds, and grace deadline
-- **AND** the initial state is `paused`
+- **GIVEN** a paid request with a duration within configured bounds
+- **WHEN** the payment transaction is redeemed for the selected logical node
+- **THEN** the system returns a unique `sess_`-prefixed session identifier
+- **AND** durably records the stable logical node URL, total seconds, remaining seconds, and grace deadline
+- **AND** the initial public state is `paused`
 - **AND** the remaining seconds equal the purchased duration
-- **AND** no client public key or tunnel address is assigned
+- **AND** no active generation or WireGuard peer is assigned
 
 #### Scenario: Invalid duration is rejected
 
 - **WHEN** a client requests zero seconds or more than the configured maximum
-- **THEN** the node rejects the request without creating a session
+- **THEN** the node rejects the request without creating or redeeming an entitlement
 
-### Requirement: Node-bound activation
+### Requirement: Logical-node activation
 
-A paid session SHALL be activated only on the node that created it. Activation
-SHALL require a non-empty client public key and SHALL NOT require or accept the
-client private key.
+A paid session SHALL belong to the logical node selected at purchase and MAY
+activate on that logical node's current accepting generation. Activation SHALL
+require a non-empty client public key and SHALL NOT require or accept the client
+private key.
 
 #### Scenario: Connect a valid paused session
 
-- **GIVEN** a paused session whose grace deadline has not passed
-- **AND** the session has remaining connected time
-- **WHEN** the client submits its public key to that session's connect endpoint
-- **THEN** the node assigns or reuses the session's tunnel address
-- **AND** it authorizes the public key as a WireGuard peer
-- **AND** it sets the state to `active`
-- **AND** it records the connection and heartbeat timestamps
-- **AND** it returns the node URL, assigned address, server public key, endpoint, expected exit IP, remaining seconds, and grace deadline
+- **GIVEN** an unowned paused session before its grace deadline with remaining time
+- **WHEN** the client submits its public key through the logical node's connect endpoint
+- **THEN** the accepting generation reserves or reuses the session's tunnel address
+- **AND** authorizes the submitted key as a WireGuard peer
+- **AND** the session becomes `active` only after peer acknowledgement
+- **AND** the response returns the stable logical node URL and the owning generation's address, server key, endpoint, expected exit IP, balance, and grace deadline
 
 #### Scenario: Activation cannot configure the peer
 
-- **GIVEN** a connectable paid session
-- **WHEN** the node cannot add its WireGuard peer
+- **WHEN** the accepting generation cannot configure or acknowledge the peer
 - **THEN** activation fails
-- **AND** the session is not left active
-- **AND** any newly reserved tunnel address is released
-- **AND** the failed client public key and address are not returned as an active assignment
+- **AND** the session is not exposed as active
+- **AND** any newly created address reservation is released
 
 #### Scenario: Expired balance cannot reconnect
 
-- **GIVEN** a session with no remaining time or a passed grace deadline
-- **WHEN** a client attempts to connect it
+- **WHEN** a session has no remaining time or its grace deadline has passed
 - **THEN** the node rejects activation
 
 ### Requirement: Connected-time accounting
@@ -123,7 +119,8 @@ unused balance.
 ### Requirement: Automatic expiration and cleanup
 
 A session SHALL expire when its remaining seconds reach zero or its grace
-deadline passes. An expired session SHALL NOT authorize VPN traffic.
+deadline passes. An expired session SHALL NOT authorize VPN traffic, but its
+terminal payment and entitlement record SHALL remain durable.
 
 #### Scenario: Connected time is exhausted
 
@@ -139,13 +136,13 @@ deadline passes. An expired session SHALL NOT authorize VPN traffic.
 - **THEN** its state becomes `expired`
 - **AND** its remaining seconds become zero
 
-#### Scenario: Cleanup removes expired resources
+#### Scenario: Cleanup releases terminal resources
 
 - **GIVEN** an expired session
-- **WHEN** periodic cleanup processes it
-- **THEN** the node removes its WireGuard peer
-- **AND** releases its tunnel-address reservation
-- **AND** removes the session from the in-memory store
+- **WHEN** cleanup processes it
+- **THEN** its WireGuard peer is removed
+- **AND** its tunnel-address reservation is released
+- **AND** its terminal record remains available for payment idempotency and administration
 
 ### Requirement: Public status and privileged administration
 
@@ -176,21 +173,21 @@ credential.
 - **THEN** it calls the pause operation
 - **AND** it does not call an administrative deletion endpoint
 
-### Requirement: In-memory session ownership
+### Requirement: Durable logical-node ownership
 
-The current node daemon SHALL treat its in-memory store as the authority for
-session state and SHALL clean up managed WireGuard peers during graceful
-shutdown.
+The coordinator SHALL preserve paid entitlements independently of any node
+daemon process and SHALL record a generation owner only while a reconciled peer
+is active or being released.
 
-#### Scenario: Daemon shuts down gracefully
+#### Scenario: Active generation shuts down gracefully
 
-- **GIVEN** sessions with configured WireGuard peers
-- **WHEN** the daemon performs shutdown cleanup
-- **THEN** it attempts to remove every managed peer
-- **AND** clears its in-memory sessions and address reservations
+- **WHEN** a generation begins graceful shutdown
+- **THEN** it stops admission
+- **AND** reconciles removal of every managed peer
+- **AND** does not delete durable paused balances or address reservations
 
-#### Scenario: Daemon restarts
+#### Scenario: Node process restarts
 
-- **WHEN** the daemon process restarts
-- **THEN** sessions from the prior process are no longer available
-
+- **WHEN** a node daemon restarts
+- **THEN** committed paid sessions remain queryable
+- **AND** the generation reconciles its peers before reporting readiness

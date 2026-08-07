@@ -502,6 +502,10 @@ mod tests {
             node_id: "test".into(),
             node_name: "Test Node".into(),
             node_region: "local".into(),
+            node_country_code: Some("DE".into()),
+            node_subdivision_code: None,
+            node_city: None,
+            accepting_sessions: true,
             public_api_url: "http://127.0.0.1:8080".into(),
             expected_exit_ip: "127.0.0.1".into(),
             registry_mode: false,
@@ -524,6 +528,7 @@ mod tests {
             mpp_realm: "vpn.test".into(),
             mpp_payment_currency: Address::repeat_byte(0x44).to_string(),
             mpp_payment_recipient: Address::repeat_byte(0x22).to_string(),
+            coordinator: None,
             streaming: StreamingConfig {
                 enabled: true,
                 mode: StreamingMode::Development,

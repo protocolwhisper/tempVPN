@@ -9,6 +9,7 @@ enum TempVPNCLIError: LocalizedError {
     case keychainItemNotFound
     case sharedKeychainUnavailable
     case noHealthyNodes
+    case nodeUnavailable
     case alreadyConnected
     case hostAppNotInstalled
     case tunnelManagerUnavailable
@@ -31,6 +32,8 @@ enum TempVPNCLIError: LocalizedError {
         case .sharedKeychainUnavailable:
             return "tempvpnctl is not signed for the TempVPN shared Keychain group. Sign the CLI and headless app with the same Apple team."
         case .noHealthyNodes: return "No healthy VPN nodes were found."
+        case .nodeUnavailable:
+            return "The selected VPN node is draining or has no available capacity."
         case .alreadyConnected: return "TempVPN is already connected. Disconnect it before connecting again."
         case .hostAppNotInstalled:
             return "The headless TempVPN.app and Packet Tunnel extension are not installed."

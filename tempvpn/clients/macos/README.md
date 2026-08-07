@@ -29,7 +29,8 @@ separate Rust client that uses `wg`/`wg-quick`.
 
 ```bash
 export VPN_CLIENT_REGISTRY_URL="https://registry.example.com"
-tempvpnctl select --region eu-west --json
+tempvpnctl select --country DE --selection-policy lowest-latency --json
+tempvpnctl check --node-url "$SELECTED_NODE_URL" --json
 
 mppx "$SELECTED_NODE_URL/sessions" \
   --account main \
@@ -39,6 +40,10 @@ mppx "$SELECTED_NODE_URL/sessions" \
 tempvpnctl connect \
   --session-response /tmp/tempvpn-session.json \
   --node-url "$SELECTED_NODE_URL" \
+  --node-name "$SELECTED_NODE_NAME" \
+  --country-code "$SELECTED_COUNTRY_CODE" \
+  --city "$SELECTED_CITY" \
+  --region "$SELECTED_REGION" \
   --json
 
 tempvpnctl status --json
@@ -53,7 +58,15 @@ time when the tunnel stops.
 
 Payment stays outside the client. The agent must pay the exact selected node
 with an already configured `mppx` account and pass that node's JSON response to
-`tempvpnctl`. The CLI rejects a response bound to a different node.
+`tempvpnctl`. The CLI rejects a response bound to a different node. Omit absent
+optional location arguments. The live `check` must run immediately before
+`mppx`; advertised capacity is a snapshot and does not reserve a slot.
+
+Natural-language parsing does not run in the indexer. The agent converts a
+request such as “Connect 30 mins to Germany” into duration `1800`, country `DE`,
+and policy `lowest_latency`; `tempvpnctl` sends only structured query fields.
+The client measures latency from this Mac, because indexer-to-node latency does
+not represent the user's network path.
 
 ## Build before Apple signing
 

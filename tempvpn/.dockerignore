@@ -1,0 +1,6 @@
+.git
+.terraform
+target
+clients/macos/.build
+**/*.tfstate
+**/*.tfplan

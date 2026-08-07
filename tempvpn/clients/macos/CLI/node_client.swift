@@ -1,8 +1,13 @@
 import Foundation
 
 private let catalogCacheTTL: TimeInterval = 24 * 60 * 60
+private let maximumConcurrentHealthProbes = 8
 
-func selectNode(registryURL: String, region: String?) async throws -> CatalogNode {
+func selectNode(
+    registryURL: String,
+    filters: DiscoveryFilters,
+    session: URLSession = .shared
+) async throws -> CatalogNode {
     let decoder = JSONDecoder()
     decoder.dateDecodingStrategy = .iso8601
     let cacheURL = try applicationSupportDirectory().appendingPathComponent("nodes.json")
@@ -10,22 +15,23 @@ func selectNode(registryURL: String, region: String?) async throws -> CatalogNod
     let usingCachedCatalog: Bool
 
     do {
-        let url = try endpointURL(baseURL: registryURL, pathComponents: ["nodes"])
+        let url = try catalogURL(baseURL: registryURL, filters: filters)
         var request = URLRequest(url: url)
         request.timeoutInterval = 10
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         try validateHTTPResponse(response, data: data)
         nodes = try decoder.decode([CatalogNode].self, from: data)
         usingCachedCatalog = false
 
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-        let cache = CatalogCache(fetchedAt: Date(), nodes: nodes)
+        let cache = CatalogCache(fetchedAt: Date(), filters: filters, nodes: nodes)
         try? encoder.encode(cache).write(to: cacheURL, options: [.atomic])
     } catch {
         guard let data = try? Data(contentsOf: cacheURL),
               let cache = try? decoder.decode(CatalogCache.self, from: data),
-              Date().timeIntervalSince(cache.fetchedAt) <= catalogCacheTTL else {
+              Date().timeIntervalSince(cache.fetchedAt) <= catalogCacheTTL,
+              cache.filters == filters else {
             throw error
         }
         nodes = cache.nodes
@@ -34,51 +40,82 @@ func selectNode(registryURL: String, region: String?) async throws -> CatalogNod
 
     let candidates = catalogCandidates(
         nodes,
-        region: region,
+        filters: filters,
         allowExpiredLeases: usingCachedCatalog,
         now: Date()
     )
-    let ranked = await withTaskGroup(of: (TimeInterval, CatalogNode)?.self) { group in
-        for node in candidates {
-            group.addTask {
-                guard let latency = try? await medianHealthLatency(apiURL: node.apiURL) else { return nil }
-                return (latency, node)
-            }
-        }
-        var results: [(TimeInterval, CatalogNode)] = []
-        for await result in group {
-            if let result { results.append(result) }
-        }
-        return results.sorted { lhs, rhs in
-            if lhs.0 == rhs.0 { return lhs.1.id < rhs.1.id }
-            return lhs.0 < rhs.0
-        }
-    }
+    let ranked = await rankCatalogNodes(candidates, session: session)
     guard let selected = ranked.first?.1 else { throw TempVPNCLIError.noHealthyNodes }
+    try await checkNodeAvailability(apiURL: selected.apiURL, session: session)
     return selected
 }
 
 func catalogCandidates(
     _ nodes: [CatalogNode],
-    region: String?,
+    filters: DiscoveryFilters,
     allowExpiredLeases: Bool,
     now: Date
 ) -> [CatalogNode] {
-    let requestedRegion = region?.lowercased()
     return nodes.filter { node in
         (allowExpiredLeases || node.leaseExpiresAt > now)
-            && (requestedRegion == nil || node.region.lowercased() == requestedRegion)
+            && matchesDiscoveryValue(node.countryCode, filters.country)
+            && matchesDiscoveryValue(node.city, filters.city)
+            && matchesDiscoveryValue(node.region, filters.region)
+            && (!filters.available || (
+                node.acceptingSessions == true && (node.availableSlots ?? 0) > 0
+            ))
     }
 }
 
-func medianHealthLatency(apiURL: String) async throws -> TimeInterval {
+private func matchesDiscoveryValue(_ actual: String?, _ requested: String?) -> Bool {
+    guard let requested else { return true }
+    return actual?.trimmingCharacters(in: .whitespacesAndNewlines)
+        .caseInsensitiveCompare(requested) == .orderedSame
+}
+
+func rankCatalogNodes(
+    _ candidates: [CatalogNode],
+    session: URLSession = .shared
+) async -> [(TimeInterval, CatalogNode)] {
+    var results: [(TimeInterval, CatalogNode)] = []
+    for start in stride(from: 0, to: candidates.count, by: maximumConcurrentHealthProbes) {
+        let end = min(start + maximumConcurrentHealthProbes, candidates.count)
+        let batch = candidates[start..<end]
+        let batchResults = await withTaskGroup(of: (TimeInterval, CatalogNode)?.self) { group in
+            for node in batch {
+                group.addTask {
+                    guard let latency = try? await medianHealthLatency(
+                        apiURL: node.apiURL,
+                        session: session
+                    ) else { return nil }
+                    return (latency, node)
+                }
+            }
+            var ranked: [(TimeInterval, CatalogNode)] = []
+            for await result in group {
+                if let result { ranked.append(result) }
+            }
+            return ranked
+        }
+        results.append(contentsOf: batchResults)
+    }
+    return results.sorted { lhs, rhs in
+        if lhs.0 == rhs.0 { return lhs.1.id < rhs.1.id }
+        return lhs.0 < rhs.0
+    }
+}
+
+func medianHealthLatency(
+    apiURL: String,
+    session: URLSession = .shared
+) async throws -> TimeInterval {
     var samples: [TimeInterval] = []
     for _ in 0..<3 {
         let url = try endpointURL(baseURL: apiURL, pathComponents: ["health"])
         var request = URLRequest(url: url)
         request.timeoutInterval = 2
         let start = ContinuousClock.now
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         try validateHTTPResponse(response, data: data)
         let elapsed = start.duration(to: .now).components
         samples.append(
@@ -87,6 +124,31 @@ func medianHealthLatency(apiURL: String) async throws -> TimeInterval {
         )
     }
     return samples.sorted()[1]
+}
+
+func fetchNodeHealth(apiURL: String, session: URLSession = .shared) async throws -> NodeHealth {
+    let url = try endpointURL(baseURL: apiURL, pathComponents: ["health"])
+    var request = URLRequest(url: url)
+    request.timeoutInterval = 2
+    let (data, response) = try await session.data(for: request)
+    try validateHTTPResponse(response, data: data)
+    return try JSONDecoder().decode(NodeHealth.self, from: data)
+}
+
+func validateNodeHealthForPayment(_ health: NodeHealth) throws {
+    guard health.status == "ok" else {
+        throw TempVPNCLIError.noHealthyNodes
+    }
+    guard health.acceptingSessions == true, (health.availableSlots ?? 0) > 0 else {
+        throw TempVPNCLIError.nodeUnavailable
+    }
+}
+
+func checkNodeAvailability(
+    apiURL: String,
+    session: URLSession = .shared
+) async throws {
+    try validateNodeHealthForPayment(try await fetchNodeHealth(apiURL: apiURL, session: session))
 }
 
 func connectSession(_ paid: PaidSession, publicKey: String) async throws -> NodeSession {

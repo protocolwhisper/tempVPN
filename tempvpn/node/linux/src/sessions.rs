@@ -468,6 +468,11 @@ impl Sessions {
             .filter(|record| record.session.state == SessionState::Active)
             .count()
     }
+
+    pub async fn available_slots(&self) -> usize {
+        let store = self.store.lock().await;
+        self.allocator.available_slots(store.allocated_ips.len())
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -538,6 +543,10 @@ mod tests {
             node_id: "test".to_string(),
             node_name: "Test Node".to_string(),
             node_region: "local".to_string(),
+            node_country_code: Some("DE".to_string()),
+            node_subdivision_code: None,
+            node_city: Some("Frankfurt".to_string()),
+            accepting_sessions: true,
             public_api_url: "http://127.0.0.1:8080".to_string(),
             expected_exit_ip: "127.0.0.1".to_string(),
             registry_mode: false,
@@ -560,6 +569,7 @@ mod tests {
             mpp_realm: "localhost:8080".to_string(),
             mpp_payment_currency: "currency".to_string(),
             mpp_payment_recipient: "recipient".to_string(),
+            coordinator: None,
             streaming: crate::config::StreamingConfig {
                 enabled: false,
                 mode: crate::config::StreamingMode::Development,
@@ -609,6 +619,7 @@ mod tests {
         );
         assert_eq!(connected.assigned_ip.as_deref(), Some("10.8.0.2/32"));
         assert!(connected.connected_at.is_some());
+        assert_eq!(sessions.available_slots().await, 252);
     }
 
     #[tokio::test]

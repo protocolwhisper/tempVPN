@@ -16,6 +16,9 @@ Node daemons --authenticated leases--> Registry-mode daemon
 Linux/macOS clients <-- GET /nodes -----------|
        |
        +-- MPP payment and VPN session go directly to selected node
+
+Fixed-session node generations --mTLS--> Persistent session coordinator
+                                      `-- SQLite durable authority
 ```
 
 ## Components
@@ -33,7 +36,8 @@ The local Rust executable, built as `vpn-client`.
 
 | Command | Purpose |
 | --- | --- |
-| `select` | Fetches the registry catalog, filters by region, probes nodes in parallel, and prints the fastest healthy node. |
+| `select` | Sends structured country/city/region filters to the registry, probes eligible nodes with bounded concurrency, and prints the fastest healthy node. |
+| `check` | Rechecks one selected node's live health and capacity immediately before payment. |
 | `connect` | Writes a private WireGuard config, brings up the interface, checks it, verifies the visible IP when possible, and records local status. |
 | `status` | Reads local status and checks whether the WireGuard interface is still active. |
 | `disconnect` | Brings down the recorded local interface, pauses the server-side usage balance, deletes its generated config, and removes local status. |
@@ -50,8 +54,8 @@ The Linux server component. It exposes:
 
 | Endpoint | Role |
 | --- | --- |
-| `GET /health` | Reports service health and the number of active sessions. |
-| `GET /nodes` | Public node catalog used by clients to discover and latency-rank nodes. |
+| `GET /health` | Reports service health, active sessions, drain state, and available tunnel slots. |
+| `GET /nodes` | Public catalog with optional `country`, `city`, `region`, and `available` filters. |
 | `PUT /registry/nodes/:id` | Authenticated node lease registration or refresh. |
 | `DELETE /registry/nodes/:id` | Authenticated graceful lease removal. |
 | `POST /sessions` | MPP-protected endpoint that creates a paid connected-time balance. |
@@ -69,6 +73,12 @@ Nodes refresh 90-second leases every 30 seconds and retry registry outages with
 capped exponential backoff. The daemon allocates tunnel IP addresses, invokes `wg` to manage peers, tracks
 connected-time balance, and removes expired peers during periodic cleanup. Its
 admin token belongs only on the server/operator side.
+
+In `fixed_session_mode = "coordinator"`, the daemon remains the public client
+API but delegates fixed purchases and lifecycle mutations to the standalone
+coordinator. It reconciles only its coordinator-managed WireGuard peers. See
+[`registry/coordinator/README.md`](registry/coordinator/README.md) for service
+configuration, mTLS roles, promotion, drain safety, and rollback limits.
 
 ### `configs`
 
@@ -112,8 +122,11 @@ Select before paying. The selected node URL must be used for both MPP payment
 and session import:
 
 ```bash
-./target/debug/vpn-client select --region eu-west --json
-./target/tempvpnctl select --region eu-west --json
+./target/debug/vpn-client select --country DE --selection-policy lowest-latency --json
+./target/debug/vpn-client check --node-url "$SELECTED_NODE_URL" --json
+
+./target/tempvpnctl select --country DE --selection-policy lowest-latency --json
+./target/tempvpnctl check --node-url "$SELECTED_NODE_URL" --json
 ```
 
 The headless host exists only because macOS requires an app container for the
@@ -138,6 +151,29 @@ Before deployment, configure WireGuard forwarding/NAT, replace every example
 placeholder, keep the admin token out of client environments, and terminate the
 HTTP API with TLS. The fixed-price `POST /sessions` flow remains available while
 streaming is introduced.
+
+### Durable fixed sessions and blue/green drain
+
+Set `fixed_session_mode = "coordinator"` and the coordinator URL, logical node,
+generation ID, root CA, certificate, and private-key paths shown in
+`configs/vpn-node.example.toml`. The URL must address the private mTLS listener,
+not the public registry endpoint. The coordinator is a separate process and is
+the only SQLite owner; node daemons do not mount or open its database.
+
+A paid entitlement belongs to the stable logical-node URL. An active tunnel
+stays pinned to its current generation. After it pauses, it can resume through
+the accepting generation with the same remaining balance and tunnel IP but a
+fresh server WireGuard key and endpoint. Clients build the tunnel from each
+connect response. Retryable `409` transitions mean peer reconciliation is still
+in progress; retryable `503` responses mean the coordinator could not confirm a
+durable mutation. Never fall back to process memory after either response.
+
+During promotion, share the active MPP challenge key between old and new
+generations for at least the five-minute challenge lifetime plus clock-skew
+allowance. Blue stops purchases and paused claims but continues serving its
+active sessions. Delete blue only after operator drain status says it is safe.
+GCP, Terraform, load-balancer, DNS, and VM-deletion automation belong to the
+dependent `deploymaster` work, not this branch.
 
 ### Tempo Session v2 streaming
 
@@ -181,6 +217,48 @@ streaming route will not be registered and `POST /sessions` continues to work.
 Retain the SQLite database even after rollback so accepted voucher and replay
 state remain available for settlement or a later restart.
 
+## Structured node discovery protocol
+
+Updated nodes advertise additive catalog fields:
+
+```json
+{
+  "id": "de-frankfurt-1",
+  "name": "Frankfurt 1",
+  "region": "eu-central",
+  "country_code": "DE",
+  "subdivision_code": "DE-HE",
+  "city": "Frankfurt",
+  "accepting_sessions": true,
+  "available_slots": 42,
+  "api_url": "https://de-frankfurt-1.example",
+  "wireguard_endpoint": "192.0.2.10:51820",
+  "expected_exit_ip": "192.0.2.10",
+  "lease_expires_at": "2026-07-31T18:00:00Z"
+}
+```
+
+`country_code` is an ISO 3166-1 alpha-2 value. Operators may omit country,
+subdivision, and city during migration, but nodes without structured location
+never match country/city requests. `region` remains an independent deployment
+label and is not interpreted as a country.
+
+Clients use conjunctive, URL-encoded filters such as:
+
+```text
+GET /nodes?country=DE&city=Frankfurt&available=true
+```
+
+The indexer decides catalog eligibility; the user's client measures three
+health samples and ranks median latency. `accepting_sessions` and
+`available_slots` are advisory lease snapshots, not reservations, so every paid
+workflow runs the selected node's live `check` immediately before `mppx`.
+
+Roll out indexer support first, then node metadata/availability, then clients,
+and finally natural-language routing in the skill. To roll back, return clients
+to explicit URL or legacy region selection. Additive fields may remain, and
+existing node-bound sessions continue without migration.
+
 ## Safety and lifecycle
 
 - The client private key is generated and retained locally.
@@ -196,6 +274,7 @@ state remain available for settlement or a later restart.
 ## Not yet supported
 
 - Windows client use.
-- Persistent daemon sessions across crashes.
-- Restoring an interrupted client's local tunnel automatically after a daemon crash.
+- Automated coordinator backups or multi-writer coordinator availability.
+- Automatic restoration of a client's already-running local tunnel after its
+  owning node generation disappears; active tunnels are deliberately not migrated.
 - Direct public production exposure without a TLS reverse proxy.

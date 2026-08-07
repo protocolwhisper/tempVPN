@@ -36,6 +36,12 @@ pub enum Error {
     #[error("no healthy VPN nodes were discovered")]
     NoHealthyNodes,
 
+    #[error("selected VPN node is not accepting sessions or has no available capacity")]
+    NodeUnavailable,
+
+    #[error("VPN node health response was not healthy")]
+    NodeUnhealthy,
+
     #[error("missing command to run")]
     MissingCommand,
 

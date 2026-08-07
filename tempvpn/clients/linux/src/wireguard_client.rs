@@ -193,3 +193,35 @@ PersistentKeepalive = 25
         allowed_ips
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use chrono::Utc;
+
+    use super::*;
+
+    #[test]
+    fn paused_resume_keeps_local_private_key_and_uses_latest_generation_metadata() {
+        let keypair = Keypair {
+            private_key: "local-private-key".into(),
+            public_key: "client-public-key".into(),
+        };
+        let session = Session {
+            session_id: "sess_resume".into(),
+            node_url: "https://node.example".into(),
+            assigned_ip: "10.8.0.2/32".into(),
+            server_public_key: "green-server-key".into(),
+            endpoint: "green.node.example:51820".into(),
+            expected_exit_ip: "203.0.113.8".into(),
+            not_after: Utc::now(),
+            remaining_seconds: 300,
+            state: "active".into(),
+        };
+
+        let rendered = render_config(&keypair, &session, "0.0.0.0/0");
+        assert!(rendered.contains("PrivateKey = local-private-key"));
+        assert!(rendered.contains("PublicKey = green-server-key"));
+        assert!(rendered.contains("Endpoint = green.node.example:51820"));
+        assert_eq!(session.node_url, "https://node.example");
+    }
+}

@@ -7,6 +7,11 @@ public enum TempoVPNProviderKeys {
     public static let remainingSeconds = "remainingSeconds"
     public static let sessionId = "sessionId"
     public static let nodeURL = "nodeURL"
+    public static let nodeName = "nodeName"
+    public static let countryCode = "countryCode"
+    public static let subdivisionCode = "subdivisionCode"
+    public static let city = "city"
+    public static let region = "region"
 }
 
 public struct TempoVPNProfile: Sendable {
@@ -17,6 +22,11 @@ public struct TempoVPNProfile: Sendable {
     public var remainingSeconds: Int?
     public var sessionId: String?
     public var nodeURL: String?
+    public var nodeName: String?
+    public var countryCode: String?
+    public var subdivisionCode: String?
+    public var city: String?
+    public var region: String?
 
     public init(
         tunnelName: String = "TempVPN",
@@ -25,7 +35,12 @@ public struct TempoVPNProfile: Sendable {
         notAfter: Date? = nil,
         remainingSeconds: Int? = nil,
         sessionId: String? = nil,
-        nodeURL: String? = nil
+        nodeURL: String? = nil,
+        nodeName: String? = nil,
+        countryCode: String? = nil,
+        subdivisionCode: String? = nil,
+        city: String? = nil,
+        region: String? = nil
     ) {
         self.tunnelName = tunnelName
         self.providerBundleIdentifier = providerBundleIdentifier
@@ -34,6 +49,11 @@ public struct TempoVPNProfile: Sendable {
         self.remainingSeconds = remainingSeconds
         self.sessionId = sessionId
         self.nodeURL = nodeURL
+        self.nodeName = nodeName
+        self.countryCode = countryCode
+        self.subdivisionCode = subdivisionCode
+        self.city = city
+        self.region = region
     }
 
     public var startOptions: [String: NSObject] {
@@ -57,6 +77,13 @@ public struct TempoVPNProfile: Sendable {
         if let nodeURL {
             options[TempoVPNProviderKeys.nodeURL] = nodeURL as NSString
         }
+        if let nodeName { options[TempoVPNProviderKeys.nodeName] = nodeName as NSString }
+        if let countryCode { options[TempoVPNProviderKeys.countryCode] = countryCode as NSString }
+        if let subdivisionCode {
+            options[TempoVPNProviderKeys.subdivisionCode] = subdivisionCode as NSString
+        }
+        if let city { options[TempoVPNProviderKeys.city] = city as NSString }
+        if let region { options[TempoVPNProviderKeys.region] = region as NSString }
 
         return options
     }

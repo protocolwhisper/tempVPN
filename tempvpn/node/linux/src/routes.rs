@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 
 use axum::{
     body::Body,
@@ -10,11 +13,11 @@ use axum::{
 };
 use mpp::{
     protocol::{
-        core::{Base64UrlJson, PaymentChallenge, PaymentCredential},
+        core::{extract_payment_scheme, Base64UrlJson, PaymentChallenge, PaymentCredential},
         methods::tempo::session::SessionCredentialPayload,
     },
     server::{
-        axum::{ChargeChallenger, ChargeConfig, MppCharge},
+        axum::{ChallengeOptions, ChargeChallenger, ChargeConfig, MppCharge, PaymentRequired},
         SessionChallengeOptions,
     },
 };
@@ -24,14 +27,19 @@ use serde_json::json;
 use crate::{
     config::Config,
     helpers::{bearer_token, registry_token_matches},
-    registry::{NodeAdvertisement, Registry},
+    registry::{NodeAdvertisement, NodeFilters, Registry},
     session_v2::{
         stream::{start_metered_stream, MeterOptions},
         StreamingPayments,
     },
-    sessions::Sessions,
+    sessions::{Session, SessionState, Sessions},
 };
+use ring::digest::{digest, SHA256};
 use std::time::Duration;
+use tempvpn_coordinator_client::{
+    CoordinatorClient, Error as CoordinatorError, SessionRecord as CoordinatorSession,
+    SessionState as CoordinatorSessionState,
+};
 
 const VPN_SESSION_PRICE_AMOUNT: &str = "0.01";
 
@@ -41,6 +49,8 @@ pub struct AppState {
     pub sessions: Arc<Sessions>,
     pub challenger: Arc<dyn ChargeChallenger>,
     pub registry: Registry,
+    pub coordinator: Option<Arc<CoordinatorClient>>,
+    pub coordinated_peer_count: Option<Arc<AtomicUsize>>,
     pub streaming: Option<Arc<StreamingPayments>>,
 }
 
@@ -78,14 +88,25 @@ pub struct StreamSessionQuery {
     pub duration_seconds: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, PartialEq, Eq)]
 struct HealthResponse {
     status: &'static str,
     active_sessions: usize,
+    accepting_sessions: bool,
+    available_slots: usize,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct NodesQuery {
+    country: Option<String>,
+    city: Option<String>,
+    region: Option<String>,
+    available: Option<bool>,
 }
 
 pub fn router(state: AppState) -> Router {
     let streaming_enabled = state.streaming.is_some();
+    let coordinated_sessions = state.coordinator.is_some();
     let mut router = Router::new()
         .route("/health", get(health))
         .route("/nodes", get(nodes))
@@ -93,7 +114,6 @@ pub fn router(state: AppState) -> Router {
             "/registry/nodes/{node_id}",
             put(register_node).delete(remove_node),
         )
-        .route("/sessions", post(create_session))
         .route("/sessions/{session_id}/connect", post(connect_session))
         .route("/sessions/{session_id}/pause", post(pause_session))
         .route("/sessions/{session_id}/heartbeat", post(heartbeat_session))
@@ -102,6 +122,11 @@ pub fn router(state: AppState) -> Router {
             "/sessions/{session_id}",
             get(get_session).delete(delete_session),
         );
+    router = if coordinated_sessions {
+        router.route("/sessions", post(create_coordinator_session))
+    } else {
+        router.route("/sessions", post(create_local_session))
+    };
     if streaming_enabled {
         router = router.route(
             "/sessions/stream",
@@ -112,21 +137,66 @@ pub fn router(state: AppState) -> Router {
 }
 
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
-    Json(HealthResponse {
-        status: "ok",
-        active_sessions: state.sessions.active_count().await,
-    })
+    Json(
+        health_snapshot(
+            &state.config,
+            &state.sessions,
+            state.coordinated_peer_count.as_deref(),
+        )
+        .await,
+    )
 }
 
-async fn nodes(State(state): State<AppState>) -> Response {
-    if !state.config.registry_mode {
+async fn health_snapshot(
+    config: &Config,
+    sessions: &Sessions,
+    coordinated_peer_count: Option<&AtomicUsize>,
+) -> HealthResponse {
+    let coordinated_active = coordinated_peer_count
+        .map(|count| count.load(Ordering::Relaxed))
+        .unwrap_or(0);
+    let local_active = sessions.active_count().await;
+    let local_available = sessions.available_slots().await;
+    HealthResponse {
+        status: "ok",
+        active_sessions: if coordinated_peer_count.is_some() {
+            coordinated_active
+        } else {
+            local_active
+        },
+        accepting_sessions: config.accepting_sessions,
+        available_slots: local_available.saturating_sub(coordinated_active),
+    }
+}
+
+async fn nodes(State(state): State<AppState>, Query(query): Query<NodesQuery>) -> Response {
+    nodes_response(&state.config, &state.registry, query).await
+}
+
+async fn nodes_response(config: &Config, registry: &Registry, query: NodesQuery) -> Response {
+    if !config.registry_mode {
         return (
             StatusCode::NOT_FOUND,
             Json(json!({ "error": "registry mode is disabled" })),
         )
             .into_response();
     }
-    Json(state.registry.active().await).into_response()
+    let filters = match NodeFilters::normalize(
+        query.country.as_deref(),
+        query.city.as_deref(),
+        query.region.as_deref(),
+        query.available,
+    ) {
+        Ok(filters) => filters,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": error.to_string() })),
+            )
+                .into_response();
+        }
+    };
+    Json(registry.active_filtered(&filters).await).into_response()
 }
 
 async fn register_node(
@@ -173,7 +243,7 @@ async fn remove_node(
     }
 }
 
-async fn create_session(
+async fn create_local_session(
     State(state): State<AppState>,
     _charge: MppCharge<VpnSessionCharge>,
     Json(request): Json<CreateSessionRequest>,
@@ -188,11 +258,258 @@ async fn create_session(
     }
 }
 
+async fn create_coordinator_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<CreateSessionRequest>,
+) -> Response {
+    if let Err(response) = validate_duration(&state.config, request.duration_seconds) {
+        return response;
+    }
+    let coordinator = state
+        .coordinator
+        .as_ref()
+        .expect("coordinator route requires coordinator state");
+    let logical_node = &state
+        .config
+        .coordinator
+        .as_ref()
+        .expect("coordinator route requires coordinator config")
+        .logical_node;
+    let fingerprint = fixed_session_fingerprint(logical_node, request.duration_seconds);
+    let payment_header = match headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(extract_payment_scheme)
+    {
+        Some(value) => value,
+        None => {
+            return coordinated_payment_required(
+                &state,
+                coordinator,
+                request.duration_seconds,
+                fingerprint,
+            )
+            .await
+        }
+    };
+    let credential = match PaymentCredential::from_header(payment_header) {
+        Ok(credential) => credential,
+        Err(_) => {
+            return coordinated_payment_required(
+                &state,
+                coordinator,
+                request.duration_seconds,
+                fingerprint,
+            )
+            .await
+        }
+    };
+    let receipt = match state
+        .challenger
+        .verify_payment_for_amount(payment_header, VPN_SESSION_PRICE_AMOUNT)
+        .await
+    {
+        Ok(receipt) => receipt,
+        Err(_) => {
+            return coordinated_payment_required(
+                &state,
+                coordinator,
+                request.duration_seconds,
+                fingerprint,
+            )
+            .await
+        }
+    };
+    match coordinator
+        .redeem_payment(
+            credential.challenge.id,
+            receipt.reference.clone(),
+            fingerprint,
+            state.config.grace_period_seconds,
+        )
+        .await
+    {
+        Ok(record) => {
+            let session = public_session(&state.config, record, None);
+            let mut response = (StatusCode::CREATED, Json(session)).into_response();
+            insert_receipt_header(&mut response, &receipt);
+            response
+        }
+        Err(error) => coordinator_error_response(error),
+    }
+}
+
+async fn coordinated_payment_required(
+    state: &AppState,
+    coordinator: &CoordinatorClient,
+    duration_seconds: u64,
+    fingerprint: [u8; 32],
+) -> Response {
+    let challenge = match state.challenger.challenge(
+        VPN_SESSION_PRICE_AMOUNT,
+        ChallengeOptions {
+            description: VpnSessionCharge::description(),
+            mppx_scope: None,
+        },
+    ) {
+        Ok(challenge) => challenge,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": error, "retryable": true })),
+            )
+                .into_response()
+        }
+    };
+    match coordinator
+        .create_payment_intent(challenge.id.clone(), duration_seconds, fingerprint, 1)
+        .await
+    {
+        Ok(_) => PaymentRequired(challenge).into_response(),
+        Err(error) => coordinator_error_response(error),
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn validate_duration(config: &Config, duration_seconds: u64) -> Result<(), Response> {
+    if duration_seconds == 0 || duration_seconds > config.max_duration_seconds {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": format!(
+                    "duration_seconds must be between 1 and {}",
+                    config.max_duration_seconds
+                )
+            })),
+        )
+            .into_response());
+    }
+    Ok(())
+}
+
+fn fixed_session_fingerprint(logical_node: &str, duration_seconds: u64) -> [u8; 32] {
+    let input = format!("fixed-session-v1\0{logical_node}\0{duration_seconds}");
+    digest(&SHA256, input.as_bytes())
+        .as_ref()
+        .try_into()
+        .expect("SHA-256 output is always 32 bytes")
+}
+
+fn public_session(
+    config: &Config,
+    record: CoordinatorSession,
+    generation: Option<(&str, &str, &str)>,
+) -> Session {
+    let (server_public_key, endpoint, expected_exit_ip) = generation.unwrap_or((
+        &config.server_public_key,
+        &config.endpoint,
+        &config.expected_exit_ip,
+    ));
+    Session {
+        session_id: record.session_id,
+        node_url: record.node_url,
+        client_public_key: record.client_public_key,
+        assigned_ip: record.assigned_ip.map(|address| {
+            if address.contains('/') {
+                address
+            } else {
+                format!("{address}/32")
+            }
+        }),
+        server_public_key: server_public_key.to_string(),
+        endpoint: endpoint.to_string(),
+        expected_exit_ip: expected_exit_ip.to_string(),
+        created_at: record.created_at,
+        connected_at: record.connected_at,
+        last_heartbeat_at: record.last_heartbeat_at,
+        not_after: record.grace_deadline,
+        total_seconds: record.total_seconds,
+        remaining_seconds: record.remaining_seconds,
+        state: match record.state {
+            CoordinatorSessionState::Paused => SessionState::Paused,
+            CoordinatorSessionState::Active => SessionState::Active,
+            CoordinatorSessionState::Expired => SessionState::Expired,
+        },
+    }
+}
+
+fn transition_response(record: &CoordinatorSession) -> Response {
+    let mut response = (
+        StatusCode::CONFLICT,
+        Json(json!({
+            "error": "session peer transition is still being reconciled",
+            "phase": record.phase,
+            "retryable": true
+        })),
+    )
+        .into_response();
+    response.headers_mut().insert(
+        axum::http::header::RETRY_AFTER,
+        HeaderValue::from_static("1"),
+    );
+    response
+}
+
+fn coordinator_error_response(error: CoordinatorError) -> Response {
+    let (status, retryable) = match &error {
+        CoordinatorError::Rejected { status: 404, .. } => (StatusCode::NOT_FOUND, false),
+        CoordinatorError::Rejected { status: 409, .. } => (StatusCode::CONFLICT, true),
+        CoordinatorError::Rejected { status: 400, .. } => (StatusCode::BAD_REQUEST, false),
+        CoordinatorError::Protocol(_) => (StatusCode::BAD_GATEWAY, true),
+        CoordinatorError::Unavailable(_)
+        | CoordinatorError::Http(_)
+        | CoordinatorError::Io(_)
+        | CoordinatorError::Configuration(_)
+        | CoordinatorError::Rejected { .. } => (StatusCode::SERVICE_UNAVAILABLE, true),
+    };
+    let mut response = (
+        status,
+        Json(json!({ "error": error.to_string(), "retryable": retryable })),
+    )
+        .into_response();
+    if retryable {
+        response.headers_mut().insert(
+            axum::http::header::RETRY_AFTER,
+            HeaderValue::from_static("1"),
+        );
+    }
+    response
+}
+
+fn insert_receipt_header(response: &mut Response, receipt: &mpp::Receipt) {
+    if let Ok(value) = receipt.to_header().and_then(|header| {
+        HeaderValue::from_str(&header)
+            .map_err(|error| mpp::MppError::InvalidConfig(error.to_string()))
+    }) {
+        response.headers_mut().insert("payment-receipt", value);
+    }
+}
+
 async fn connect_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
     Json(request): Json<ConnectSessionRequest>,
 ) -> Response {
+    if let Some(coordinator) = &state.coordinator {
+        return match coordinator
+            .claim(session_id, request.client_public_key)
+            .await
+        {
+            Ok(claim) if claim.session.phase.is_some() => transition_response(&claim.session),
+            Ok(claim) => Json(public_session(
+                &state.config,
+                claim.session,
+                Some((
+                    &claim.wireguard_public_key,
+                    &claim.wireguard_endpoint,
+                    &claim.expected_exit_ip,
+                )),
+            ))
+            .into_response(),
+            Err(error) => coordinator_error_response(error),
+        };
+    }
     match state
         .sessions
         .connect(&session_id, request.client_public_key)
@@ -208,6 +525,13 @@ async fn connect_session(
 }
 
 async fn pause_session(State(state): State<AppState>, Path(session_id): Path<String>) -> Response {
+    if let Some(coordinator) = &state.coordinator {
+        return match coordinator.pause(session_id).await {
+            Ok(record) if record.phase.is_some() => transition_response(&record),
+            Ok(record) => Json(public_session(&state.config, record, None)).into_response(),
+            Err(error) => coordinator_error_response(error),
+        };
+    }
     match state.sessions.pause(&session_id).await {
         Ok(Some(session)) => Json(session).into_response(),
         Ok(None) => (
@@ -227,6 +551,12 @@ async fn heartbeat_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Response {
+    if let Some(coordinator) = &state.coordinator {
+        return match coordinator.heartbeat(session_id).await {
+            Ok(record) => Json(public_session(&state.config, record, None)).into_response(),
+            Err(error) => coordinator_error_response(error),
+        };
+    }
     match state.sessions.heartbeat(&session_id).await {
         Ok(session) => Json(session).into_response(),
         Err(err) => (
@@ -238,6 +568,12 @@ async fn heartbeat_session(
 }
 
 async fn session_status(State(state): State<AppState>, Path(session_id): Path<String>) -> Response {
+    if let Some(coordinator) = &state.coordinator {
+        return match coordinator.status(session_id).await {
+            Ok(record) => Json(public_session(&state.config, record, None)).into_response(),
+            Err(error) => coordinator_error_response(error),
+        };
+    }
     match state.sessions.get(&session_id).await {
         Some(session) => Json(session).into_response(),
         None => (
@@ -514,6 +850,13 @@ async fn get_session(
         return response;
     }
 
+    if let Some(coordinator) = &state.coordinator {
+        return match coordinator.status(session_id).await {
+            Ok(record) => Json(public_session(&state.config, record, None)).into_response(),
+            Err(error) => coordinator_error_response(error),
+        };
+    }
+
     match state.sessions.get(&session_id).await {
         Some(session) => Json(session).into_response(),
         None => (
@@ -531,6 +874,17 @@ async fn delete_session(
 ) -> Response {
     if let Err(response) = authorize(&state.config, &headers) {
         return response;
+    }
+
+    if state.coordinator.is_some() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error": "coordinated session revocation requires the coordinator operator API",
+                "retryable": false
+            })),
+        )
+            .into_response();
     }
 
     match state.sessions.remove(&session_id).await {
@@ -675,6 +1029,10 @@ mod tests {
             node_id: "test".into(),
             node_name: "Test Node".into(),
             node_region: "local".into(),
+            node_country_code: Some("DE".into()),
+            node_subdivision_code: None,
+            node_city: None,
+            accepting_sessions: true,
             public_api_url: "http://127.0.0.1:8080".into(),
             expected_exit_ip: "127.0.0.1".into(),
             registry_mode: false,
@@ -697,6 +1055,7 @@ mod tests {
             mpp_realm: "vpn.test".into(),
             mpp_payment_currency: Address::repeat_byte(0x44).to_string(),
             mpp_payment_recipient: Address::repeat_byte(0x22).to_string(),
+            coordinator: None,
             streaming: StreamingConfig {
                 enabled: true,
                 mode: StreamingMode::Development,
@@ -760,6 +1119,8 @@ mod tests {
             sessions,
             challenger,
             registry: Registry::default(),
+            coordinator: None,
+            coordinated_peer_count: None,
             streaming: Some(Arc::new(StreamingPayments {
                 mpp: streaming,
                 store,
@@ -910,5 +1271,110 @@ mod tests {
         )
         .unwrap();
         assert_eq!(challenge.intent.as_str(), "charge");
+    }
+
+    #[tokio::test]
+    async fn health_reports_live_capacity_and_drain_state() {
+        let mut config = test_config();
+        let sessions = Sessions::new(&config).unwrap();
+        let ready = health_snapshot(&config, &sessions, None).await;
+        assert_eq!(ready.available_slots, 253);
+        assert!(ready.accepting_sessions);
+
+        let created = sessions.create(60).await.unwrap();
+        sessions
+            .connect(&created.session_id, "client-key".into())
+            .await
+            .unwrap();
+        config.accepting_sessions = false;
+        let draining = health_snapshot(&config, &sessions, None).await;
+        assert_eq!(draining.available_slots, 252);
+        assert!(!draining.accepting_sessions);
+        assert_eq!(draining.active_sessions, 1);
+    }
+
+    #[tokio::test]
+    async fn health_reports_exhausted_capacity() {
+        let config = test_config();
+        let sessions = Sessions::new(&config).unwrap();
+        for index in 0..253 {
+            let created = sessions.create(60).await.unwrap();
+            sessions
+                .connect(&created.session_id, format!("client-key-{index}"))
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            health_snapshot(&config, &sessions, None)
+                .await
+                .available_slots,
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn coordinator_health_counts_reconciled_peers_instead_of_local_sessions() {
+        let config = test_config();
+        let sessions = Sessions::new(&config).unwrap();
+        let coordinated = AtomicUsize::new(2);
+        let health = health_snapshot(&config, &sessions, Some(&coordinated)).await;
+        assert_eq!(health.active_sessions, 2);
+        assert_eq!(health.available_slots, 251);
+    }
+
+    #[tokio::test]
+    async fn catalog_route_rejects_invalid_country_with_bad_request() {
+        let mut config = test_config();
+        config.registry_mode = true;
+        let response = nodes_response(
+            &config,
+            &Registry::default(),
+            NodesQuery {
+                country: Some("ZZ".into()),
+                available: Some(true),
+                ..NodesQuery::default()
+            },
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn coordinator_outage_is_retryable_without_falling_back_to_memory() {
+        let response =
+            coordinator_error_response(CoordinatorError::Unavailable("connection refused".into()));
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response.headers().get(axum::http::header::RETRY_AFTER),
+            Some(&HeaderValue::from_static("1"))
+        );
+    }
+
+    #[test]
+    fn promotion_overlap_accepts_the_shared_challenge_key() {
+        let config = test_config();
+        let old_generation = Mpp::create(
+            tempo(TempoConfig {
+                recipient: config.mpp_payment_recipient.as_str(),
+            })
+            .currency(config.mpp_payment_currency.as_str())
+            .rpc_url(config.mpp_rpc_url.as_str())
+            .chain_id(config.streaming.chain_id)
+            .realm(config.mpp_realm.as_str())
+            .secret_key("shared-promotion-key"),
+        )
+        .unwrap();
+        let challenge = old_generation
+            .challenge(
+                VPN_SESSION_PRICE_AMOUNT,
+                ChallengeOptions {
+                    description: VpnSessionCharge::description(),
+                    mppx_scope: None,
+                },
+            )
+            .unwrap();
+
+        assert!(challenge.verify("shared-promotion-key"));
+        assert!(!challenge.verify("next-key-after-overlap"));
     }
 }

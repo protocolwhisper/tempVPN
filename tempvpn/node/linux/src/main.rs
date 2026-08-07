@@ -3,6 +3,8 @@ mod config;
 mod error;
 mod helpers;
 mod ip_allocator;
+mod location;
+mod reconciliation;
 mod registry;
 mod routes;
 mod session_v2;
@@ -12,7 +14,10 @@ mod wireguard;
 use alloy::{network::EthereumWallet, providers::ProviderBuilder};
 use clap::Parser;
 use mpp::server::{axum::ChargeChallenger, tempo, Mpp, TempoConfig};
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 use tokio::net::TcpListener;
 use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -29,8 +34,12 @@ use crate::{
         StreamingPayments,
     },
     sessions::Sessions,
+    wireguard::WireGuard,
 };
 use tempo_alloy::TempoNetwork;
+use tempvpn_coordinator_client::{
+    ClientConfig as CoordinatorClientConfig, CoordinatorClient, GenerationMetadata,
+};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -44,6 +53,47 @@ async fn main() -> Result<()> {
 
     let config = Config::load(Args::parse()).await?;
     let sessions = Sessions::new(&config)?;
+    let coordinator = create_coordinator_client(&config).await?;
+    let reconciler = coordinator.as_ref().map(|coordinator| {
+        reconciliation::PeerReconciler::new(
+            coordinator.clone(),
+            WireGuard::new(
+                config.wg_command.clone(),
+                config.wg_interface.clone(),
+                config.mock_wg,
+            ),
+        )
+    });
+    let coordinated_peer_count = reconciler
+        .as_ref()
+        .map(|reconciler| reconciler.managed_count_handle());
+    if let Some(coordinator) = &coordinator {
+        coordinator
+            .register_generation(
+                &GenerationMetadata {
+                    node_name: config.node_name.clone(),
+                    region: config.node_region.clone(),
+                    country_code: config.node_country_code.clone(),
+                    subdivision_code: config.node_subdivision_code.clone(),
+                    city: config.node_city.clone(),
+                    api_url: config.public_api_url.clone(),
+                    wireguard_endpoint: config.endpoint.clone(),
+                    wireguard_public_key: config.server_public_key.clone(),
+                    expected_exit_ip: config.expected_exit_ip.clone(),
+                    tunnel_network: config.tunnel_cidr.clone(),
+                },
+                available_slots(&sessions, coordinated_peer_count.as_deref()).await as u32,
+            )
+            .await?;
+        spawn_coordinator_renewal(
+            coordinator.clone(),
+            sessions.clone(),
+            coordinated_peer_count.clone(),
+        );
+    }
+    if let Some(reconciler) = &reconciler {
+        reconciler.spawn();
+    }
     let challenger = create_mpp_challenger(&config)?;
     let registry = registry::Registry::default();
     let streaming = create_streaming_payments(&config, sessions.clone()).await?;
@@ -55,7 +105,11 @@ async fn main() -> Result<()> {
         );
     }
     spawn_expiry_loop(sessions.clone(), config.sweep_interval_seconds);
-    let registration = registry::spawn_registration(config.clone());
+    let registration = registry::spawn_registration(
+        config.clone(),
+        sessions.clone(),
+        coordinated_peer_count.clone(),
+    );
 
     let listener = TcpListener::bind(config.bind_addr).await?;
     let app = router(AppState {
@@ -63,6 +117,8 @@ async fn main() -> Result<()> {
         sessions: sessions.clone(),
         challenger,
         registry,
+        coordinator,
+        coordinated_peer_count,
         streaming,
     });
 
@@ -78,10 +134,59 @@ async fn main() -> Result<()> {
 
     if config.cleanup_on_shutdown {
         info!("cleaning up active sessions before shutdown");
+        if let Some(reconciler) = reconciler {
+            reconciler.cleanup().await;
+        }
         sessions.cleanup_all().await;
     }
 
     Ok(())
+}
+
+async fn create_coordinator_client(config: &Config) -> Result<Option<Arc<CoordinatorClient>>> {
+    let Some(coordinator) = &config.coordinator else {
+        return Ok(None);
+    };
+    Ok(Some(Arc::new(
+        CoordinatorClient::new(&CoordinatorClientConfig {
+            url: coordinator.url.clone(),
+            logical_node: coordinator.logical_node.clone(),
+            generation_id: coordinator.generation_id.clone(),
+            root_ca_path: coordinator.root_ca_path.clone(),
+            certificate_path: coordinator.certificate_path.clone(),
+            private_key_path: coordinator.private_key_path.clone(),
+        })
+        .await?,
+    )))
+}
+
+fn spawn_coordinator_renewal(
+    client: Arc<CoordinatorClient>,
+    sessions: Arc<Sessions>,
+    coordinated_peer_count: Option<Arc<AtomicUsize>>,
+) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+        loop {
+            interval.tick().await;
+            if let Err(error) = client
+                .renew_generation(
+                    available_slots(&sessions, coordinated_peer_count.as_deref()).await as u32,
+                )
+                .await
+            {
+                error!(error = %error, "failed to renew coordinator generation health");
+            }
+        }
+    });
+}
+
+async fn available_slots(sessions: &Sessions, coordinated: Option<&AtomicUsize>) -> usize {
+    sessions.available_slots().await.saturating_sub(
+        coordinated
+            .map(|count| count.load(Ordering::Relaxed))
+            .unwrap_or(0),
+    )
 }
 
 async fn shutdown_signal() {

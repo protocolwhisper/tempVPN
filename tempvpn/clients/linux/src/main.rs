@@ -21,7 +21,7 @@ use crate::{
     cli::{Cli, Command},
     config::Config,
     error::{Error, Result},
-    node_client::NodeClient,
+    node_client::{DiscoveryFilters, NodeClient},
     process::{run_child_with_kill_switch, RunOutcome},
     status::StatusFile,
     wireguard_client::WireGuardTunnel,
@@ -47,19 +47,44 @@ async fn main() -> Result<()> {
         Command::Heartbeat => heartbeat(config).await,
         Command::Config(args) => generate_config(config, args).await,
         Command::Select(args) => select_node(config, args).await,
+        Command::Check(args) => check_node(config, args).await,
         Command::Status => print_status(config).await,
     }
 }
 
-async fn select_node(config: Config, args: cli::SelectArgs) -> Result<()> {
-    let node = NodeClient::select(
-        &config,
-        args.selection.region.as_deref(),
-        args.selection.node_url.as_deref(),
-    )
-    .await?;
+async fn check_node(config: Config, args: cli::CheckArgs) -> Result<()> {
+    let node = NodeClient::for_base_url(args.node_url, &config);
+    node.check_available().await?;
     if args.json {
-        println!("{}", serde_json::json!({ "node_url": node.base_url() }));
+        println!(
+            "{}",
+            serde_json::json!({ "status": "available", "node_url": node.base_url() })
+        );
+    } else {
+        println!("available: {}", node.base_url());
+    }
+    Ok(())
+}
+
+async fn select_node(config: Config, args: cli::SelectArgs) -> Result<()> {
+    let filters = discovery_filters(&args.selection)?;
+    let node = NodeClient::select(&config, &filters, args.selection.node_url.as_deref()).await?;
+    if args.json {
+        let selected = node.selected_node();
+        println!(
+            "{}",
+            serde_json::json!({
+                "node_url": node.base_url(),
+                "node_id": selected.map(|node| node.id.as_str()),
+                "node_name": selected.map(|node| node.name.as_str()),
+                "country_code": selected.and_then(|node| node.country_code.as_deref()),
+                "subdivision_code": selected.and_then(|node| node.subdivision_code.as_deref()),
+                "city": selected.and_then(|node| node.city.as_deref()),
+                "region": selected.map(|node| node.region.as_str()),
+                "expected_exit_ip": selected.map(|node| node.expected_exit_ip.as_str()),
+                "selection_policy": "lowest_latency"
+            })
+        );
     } else {
         println!("{}", node.base_url());
     }
@@ -382,12 +407,8 @@ async fn get_session(
         return Ok((keypair, session, node.base_url().to_string()));
     }
 
-    let node = NodeClient::select(
-        config,
-        selection.region.as_deref(),
-        selection.node_url.as_deref(),
-    )
-    .await?;
+    let filters = discovery_filters(selection)?;
+    let node = NodeClient::select(config, &filters, selection.node_url.as_deref()).await?;
     let node_url = node.base_url().to_string();
     let keypair = keygen::generate(&config.wg_command).await?;
     info!("generated ephemeral WireGuard keypair");
@@ -396,6 +417,15 @@ async fn get_session(
         .connect_session(&created.session_id, &keypair.public_key)
         .await?;
     Ok((keypair, session, node_url))
+}
+
+fn discovery_filters(selection: &cli::SelectionArgs) -> Result<DiscoveryFilters> {
+    let _policy = selection.selection_policy;
+    DiscoveryFilters::new(
+        selection.country.as_deref(),
+        selection.city.as_deref(),
+        selection.region.as_deref(),
+    )
 }
 
 fn enforce_selected_node(override_url: Option<&str>, paid_node_url: &str) -> Result<()> {

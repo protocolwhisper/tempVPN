@@ -41,6 +41,31 @@ func endpointURL(baseURL: String, pathComponents: [String]) throws -> URL {
     return url
 }
 
+func catalogURL(baseURL: String, filters: DiscoveryFilters) throws -> URL {
+    let base = try endpointURL(baseURL: baseURL, pathComponents: ["nodes"])
+    guard var components = URLComponents(url: base, resolvingAgainstBaseURL: false) else {
+        throw TempVPNCLIError.invalidURL(baseURL)
+    }
+    var items: [URLQueryItem] = []
+    if let country = filters.country { items.append(URLQueryItem(name: "country", value: country)) }
+    if let city = filters.city { items.append(URLQueryItem(name: "city", value: city)) }
+    if let region = filters.region { items.append(URLQueryItem(name: "region", value: region)) }
+    items.append(URLQueryItem(name: "available", value: String(filters.available)))
+    components.queryItems = items
+    guard let url = components.url else { throw TempVPNCLIError.invalidURL(baseURL) }
+    return url
+}
+
+func enforceSelectedNode(selectedNodeURL: String?, paidNodeURL: String) throws -> String {
+    let paid = try normalizedNodeURL(paidNodeURL)
+    if let selectedNodeURL, try normalizedNodeURL(selectedNodeURL) != paid {
+        throw TempVPNCLIError.invalidResponse(
+            "the paid session belongs to \(paid), not \(selectedNodeURL)"
+        )
+    }
+    return paid
+}
+
 func readInput(_ path: String) throws -> Data {
     if path == "-" { return FileHandle.standardInput.readDataToEndOfFile() }
     return try Data(contentsOf: URL(fileURLWithPath: path))

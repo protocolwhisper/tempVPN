@@ -9,6 +9,8 @@ pub struct IpAllocator {
 }
 
 impl IpAllocator {
+    pub const USABLE_ADDRESSES: usize = 253;
+
     pub fn new(cidr: &str) -> Result<Self> {
         let (addr, prefix) = cidr
             .split_once('/')
@@ -33,5 +35,23 @@ impl IpAllocator {
     pub fn peer_cidr(&self, ip: Ipv4Addr) -> String {
         let _ = self.prefix;
         format!("{ip}/32")
+    }
+
+    pub fn available_slots(&self, used: usize) -> usize {
+        Self::USABLE_ADDRESSES.saturating_sub(used)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reports_remaining_allocator_capacity() {
+        let allocator = IpAllocator::new("10.8.0.0/24").unwrap();
+        assert_eq!(allocator.available_slots(0), 253);
+        assert_eq!(allocator.available_slots(252), 1);
+        assert_eq!(allocator.available_slots(253), 0);
+        assert_eq!(allocator.available_slots(300), 0);
     }
 }

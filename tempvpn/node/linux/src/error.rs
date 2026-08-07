@@ -55,4 +55,7 @@ pub enum Error {
 
     #[error(transparent)]
     ParseBool(#[from] std::str::ParseBoolError),
+
+    #[error(transparent)]
+    Coordinator(#[from] tempvpn_coordinator_client::Error),
 }

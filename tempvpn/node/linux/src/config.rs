@@ -8,6 +8,7 @@ use serde::Deserialize;
 
 use crate::error::{Error, Result};
 use crate::helpers::endpoint_host;
+use crate::location::{normalize_country_code, normalize_optional_text};
 
 const DEFAULT_MPP_RPC_URL: &str = "https://rpc.moderato.tempo.xyz";
 const DEFAULT_MPP_REALM: &str = "localhost:8080";
@@ -44,6 +45,16 @@ pub struct StreamingConfig {
     pub store: ChannelStoreConfig,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CoordinatorConfig {
+    pub url: String,
+    pub logical_node: String,
+    pub generation_id: String,
+    pub root_ca_path: PathBuf,
+    pub certificate_path: PathBuf,
+    pub private_key_path: PathBuf,
+}
+
 #[derive(Debug, Parser)]
 pub struct Args {
     #[arg(long)]
@@ -57,6 +68,10 @@ pub struct Config {
     pub node_id: String,
     pub node_name: String,
     pub node_region: String,
+    pub node_country_code: Option<String>,
+    pub node_subdivision_code: Option<String>,
+    pub node_city: Option<String>,
+    pub accepting_sessions: bool,
     pub public_api_url: String,
     pub expected_exit_ip: String,
     pub registry_mode: bool,
@@ -79,6 +94,7 @@ pub struct Config {
     pub mpp_realm: String,
     pub mpp_payment_currency: String,
     pub mpp_payment_recipient: String,
+    pub coordinator: Option<CoordinatorConfig>,
     pub streaming: StreamingConfig,
 }
 
@@ -89,6 +105,10 @@ struct FileConfig {
     node_id: Option<String>,
     node_name: Option<String>,
     node_region: Option<String>,
+    node_country_code: Option<String>,
+    node_subdivision_code: Option<String>,
+    node_city: Option<String>,
+    accepting_sessions: Option<bool>,
     public_api_url: Option<String>,
     expected_exit_ip: Option<String>,
     registry_mode: Option<bool>,
@@ -111,6 +131,13 @@ struct FileConfig {
     mpp_realm: Option<String>,
     mpp_payment_currency: Option<String>,
     mpp_payment_recipient: Option<String>,
+    fixed_session_mode: Option<String>,
+    coordinator_url: Option<String>,
+    coordinator_logical_node: Option<String>,
+    coordinator_generation_id: Option<String>,
+    coordinator_root_ca_path: Option<PathBuf>,
+    coordinator_certificate_path: Option<PathBuf>,
+    coordinator_private_key_path: Option<PathBuf>,
     mpp_streaming_enabled: Option<bool>,
     mpp_streaming_mode: Option<String>,
     mpp_chain_id: Option<u64>,
@@ -149,6 +176,25 @@ impl Config {
         let node_id = env_or_default("VPN_NODE_ID", file.node_id, "default");
         let node_name = env_or_default("VPN_NODE_NAME", file.node_name, "Tempo VPN Node");
         let node_region = env_or_default("VPN_NODE_REGION", file.node_region, "unknown");
+        let node_country_code = normalize_country_code(
+            env_or_optional("VPN_NODE_COUNTRY_CODE", file.node_country_code).as_deref(),
+        )
+        .map_err(Error::InvalidConfig)?;
+        let node_subdivision_code = normalize_optional_text(
+            "node_subdivision_code",
+            env_or_optional("VPN_NODE_SUBDIVISION_CODE", file.node_subdivision_code).as_deref(),
+        )
+        .map_err(Error::InvalidConfig)?;
+        let node_city = normalize_optional_text(
+            "node_city",
+            env_or_optional("VPN_NODE_CITY", file.node_city).as_deref(),
+        )
+        .map_err(Error::InvalidConfig)?;
+        let accepting_sessions = env_or(
+            "VPN_NODE_ACCEPTING_SESSIONS",
+            file.accepting_sessions,
+            "true",
+        )?;
         let public_api_url = env_or_default(
             "VPN_NODE_PUBLIC_API_URL",
             file.public_api_url,
@@ -237,6 +283,45 @@ impl Config {
             file.mpp_payment_recipient,
             DEFAULT_MPP_PAYMENT_RECIPIENT,
         );
+        let fixed_session_mode = env_or_default(
+            "VPN_NODE_FIXED_SESSION_MODE",
+            file.fixed_session_mode.clone(),
+            "memory",
+        );
+        let coordinator = match fixed_session_mode.to_ascii_lowercase().as_str() {
+            "memory" => None,
+            "coordinator" => Some(CoordinatorConfig {
+                url: env_or_required("VPN_NODE_COORDINATOR_URL", file.coordinator_url)?
+                    .trim_end_matches('/')
+                    .to_string(),
+                logical_node: env_or_default(
+                    "VPN_NODE_COORDINATOR_LOGICAL_NODE",
+                    file.coordinator_logical_node,
+                    &node_id,
+                ),
+                generation_id: env_or_required(
+                    "VPN_NODE_COORDINATOR_GENERATION_ID",
+                    file.coordinator_generation_id,
+                )?,
+                root_ca_path: env_path_required(
+                    "VPN_NODE_COORDINATOR_ROOT_CA_FILE",
+                    file.coordinator_root_ca_path,
+                )?,
+                certificate_path: env_path_required(
+                    "VPN_NODE_COORDINATOR_CERT_FILE",
+                    file.coordinator_certificate_path,
+                )?,
+                private_key_path: env_path_required(
+                    "VPN_NODE_COORDINATOR_KEY_FILE",
+                    file.coordinator_private_key_path,
+                )?,
+            }),
+            other => {
+                return Err(Error::InvalidConfig(format!(
+                    "VPN_NODE_FIXED_SESSION_MODE must be memory or coordinator, got {other}"
+                )))
+            }
+        };
         let streaming = load_streaming_config(&streaming_file, &mpp_payment_recipient)?;
 
         Ok(Self {
@@ -245,6 +330,10 @@ impl Config {
             node_id,
             node_name,
             node_region,
+            node_country_code,
+            node_subdivision_code,
+            node_city,
+            accepting_sessions,
             public_api_url,
             expected_exit_ip,
             registry_mode,
@@ -267,6 +356,7 @@ impl Config {
             mpp_realm,
             mpp_payment_currency,
             mpp_payment_recipient,
+            coordinator,
             streaming,
         })
     }
@@ -454,6 +544,10 @@ fn env_var(name: &'static str) -> Option<String> {
     env::var(name).ok().filter(|value| !value.is_empty())
 }
 
+fn env_or_optional(name: &'static str, value: Option<String>) -> Option<String> {
+    env::var(name).ok().or(value)
+}
+
 fn env_or_required(name: &'static str, value: Option<String>) -> Result<String> {
     if let Ok(value) = env::var(name) {
         if !value.is_empty() {
@@ -462,6 +556,14 @@ fn env_or_required(name: &'static str, value: Option<String>) -> Result<String> 
     }
     value
         .filter(|value| !value.is_empty())
+        .ok_or(Error::MissingConfig(name))
+}
+
+fn env_path_required(name: &'static str, value: Option<PathBuf>) -> Result<PathBuf> {
+    env::var_os(name)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or(value)
         .ok_or(Error::MissingConfig(name))
 }
 

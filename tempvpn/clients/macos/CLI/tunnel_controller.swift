@@ -13,6 +13,11 @@ enum TempVPNProviderKey {
     static let nodeURL = "nodeURL"
     static let assignedIP = "assignedIP"
     static let expectedExitIP = "expectedExitIP"
+    static let nodeName = "nodeName"
+    static let countryCode = "countryCode"
+    static let subdivisionCode = "subdivisionCode"
+    static let city = "city"
+    static let region = "region"
 }
 
 func installAndStartTunnel(configuration: [String: Any]) async throws {

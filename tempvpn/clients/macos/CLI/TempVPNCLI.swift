@@ -18,6 +18,7 @@ struct TempVPNCLI {
 
         switch command {
         case "select": try await select(arguments: arguments, json: json)
+        case "check": try await check(arguments: arguments, json: json)
         case "connect": try await connect(arguments: arguments, json: json)
         case "status": try await status(json: json)
         case "disconnect": try await disconnect(json: json)
@@ -28,12 +29,20 @@ struct TempVPNCLI {
     }
 
     private static func select(arguments: [String], json: Bool) async throws {
+        let policy = try option("--selection-policy", in: arguments) ?? "lowest-latency"
+        guard ["lowest-latency", "lowest_latency"].contains(policy) else {
+            throw TempVPNCLIError.usage(
+                "Only --selection-policy lowest-latency is currently supported."
+            )
+        }
         if let nodeURL = try option("--node-url", in: arguments) {
             let normalized = try normalizedNodeURL(nodeURL)
             let latency = try await medianHealthLatency(apiURL: normalized)
+            try await checkNodeAvailability(apiURL: normalized)
             try emit([
                 "node_url": normalized,
                 "latency_ms": Int(latency * 1_000),
+                "selection_policy": "lowest_latency",
             ], json: json)
             return
         }
@@ -45,16 +54,40 @@ struct TempVPNCLI {
                 "Set --registry-url or VPN_CLIENT_REGISTRY_URL before selecting a node."
             )
         }
-        let node = try await selectNode(
-            registryURL: registry,
+        let filters = try DiscoveryFilters(
+            country: try option("--country", in: arguments),
+            city: try option("--city", in: arguments),
             region: try option("--region", in: arguments)
         )
-        try emit([
+        let node = try await selectNode(registryURL: registry, filters: filters)
+        var result: [String: Any] = [
             "node_url": node.apiURL,
             "node_id": node.id,
-            "name": node.name,
+            "node_name": node.name,
             "region": node.region,
             "expected_exit_ip": node.expectedExitIP,
+            "selection_policy": "lowest_latency",
+        ]
+        if let countryCode = node.countryCode { result["country_code"] = countryCode }
+        if let subdivisionCode = node.subdivisionCode {
+            result["subdivision_code"] = subdivisionCode
+        }
+        if let city = node.city { result["city"] = city }
+        try emit(result, json: json)
+    }
+
+    private static func check(arguments: [String], json: Bool) async throws {
+        guard let rawNodeURL = try option("--node-url", in: arguments) else {
+            throw TempVPNCLIError.usage("check requires --node-url <selected-url>.")
+        }
+        let nodeURL = try normalizedNodeURL(rawNodeURL)
+        let health = try await fetchNodeHealth(apiURL: nodeURL)
+        try validateNodeHealthForPayment(health)
+        try emit([
+            "status": "available",
+            "node_url": nodeURL,
+            "accepting_sessions": health.acceptingSessions ?? false,
+            "available_slots": health.availableSlots ?? 0,
         ], json: json)
     }
 
@@ -65,13 +98,10 @@ struct TempVPNCLI {
         }
 
         let paid = try JSONDecoder().decode(PaidSession.self, from: readInput(responsePath))
-        let paidNodeURL = try normalizedNodeURL(paid.nodeURL)
-        if let selectedNodeURL = try option("--node-url", in: arguments),
-           try normalizedNodeURL(selectedNodeURL) != paidNodeURL {
-            throw TempVPNCLIError.invalidResponse(
-                "the paid session belongs to \(paidNodeURL), not \(selectedNodeURL)"
-            )
-        }
+        let paidNodeURL = try enforceSelectedNode(
+            selectedNodeURL: try option("--node-url", in: arguments),
+            paidNodeURL: paid.nodeURL
+        )
 
         let publicKey = try loadOrCreateWireGuardPublicKey(sessionId: paid.sessionId)
         let active = try await connectSession(paid, publicKey: publicKey)
@@ -84,19 +114,13 @@ struct TempVPNCLI {
             throw TempVPNCLIError.invalidResponse("the node did not assign a tunnel IP")
         }
 
-        let wgQuick = """
-        [Interface]
-        PrivateKey = keychain:\(paid.sessionId)
-        Address = \(assignedIP)
-        DNS = 1.1.1.1
-
-        [Peer]
-        PublicKey = \(active.serverPublicKey)
-        Endpoint = \(active.endpoint)
-        AllowedIPs = 0.0.0.0/0, ::/0
-        PersistentKeepalive = 25
-        """
-        let configuration: [String: Any] = [
+        let wgQuick = wireGuardQuickConfiguration(
+            sessionId: paid.sessionId,
+            assignedIP: assignedIP,
+            serverPublicKey: active.serverPublicKey,
+            endpoint: active.endpoint
+        )
+        var configuration: [String: Any] = [
             TempVPNProviderKey.tunnelName: tempVPNTunnelName,
             TempVPNProviderKey.wgQuickConfig: wgQuick,
             TempVPNProviderKey.sessionId: active.sessionId,
@@ -106,6 +130,20 @@ struct TempVPNCLI {
             TempVPNProviderKey.assignedIP: assignedIP,
             TempVPNProviderKey.expectedExitIP: active.expectedExitIP,
         ]
+        let selectedNodeName = try option("--node-name", in: arguments)
+        let selectedCountryCode = try option("--country-code", in: arguments)
+        let selectedSubdivisionCode = try option("--subdivision-code", in: arguments)
+        let selectedCity = try option("--city", in: arguments)
+        let selectedRegion = try option("--region", in: arguments)
+        if let selectedNodeName { configuration[TempVPNProviderKey.nodeName] = selectedNodeName }
+        if let selectedCountryCode {
+            configuration[TempVPNProviderKey.countryCode] = selectedCountryCode
+        }
+        if let selectedSubdivisionCode {
+            configuration[TempVPNProviderKey.subdivisionCode] = selectedSubdivisionCode
+        }
+        if let selectedCity { configuration[TempVPNProviderKey.city] = selectedCity }
+        if let selectedRegion { configuration[TempVPNProviderKey.region] = selectedRegion }
 
         do {
             try await installAndStartTunnel(configuration: configuration)
@@ -124,6 +162,10 @@ struct TempVPNCLI {
             "expected_exit_ip": active.expectedExitIP,
             "remaining_seconds": active.remainingSeconds,
             "not_after": active.notAfter,
+            "node_name": selectedNodeName ?? "unknown",
+            "country_code": selectedCountryCode ?? "unknown",
+            "city": selectedCity ?? "unknown",
+            "region": selectedRegion ?? "unknown",
         ], json: json)
     }
 
@@ -135,21 +177,28 @@ struct TempVPNCLI {
             throw TempVPNCLIError.invalidTunnelConfiguration
         }
         let server = try? await fetchSession(nodeURL: nodeURL, sessionId: sessionId)
-        try emit([
+        let remainingSeconds = server?.remainingSeconds
+            ?? configuration[TempVPNProviderKey.remainingSeconds] as? Int
+            ?? 0
+        let notAfter = server?.notAfter
+            ?? configuration[TempVPNProviderKey.notAfter] as? String
+            ?? "unknown"
+        let result: [String: Any] = [
             "status": tunnelStatusName(manager.connection.status),
             "session_id": sessionId,
             "node_url": nodeURL,
             "profile": manager.localizedDescription ?? tempVPNTunnelName,
             "assigned_ip": configuration[TempVPNProviderKey.assignedIP] as? String ?? "unknown",
             "expected_exit_ip": configuration[TempVPNProviderKey.expectedExitIP] as? String ?? "unknown",
-            "remaining_seconds": server?.remainingSeconds
-                ?? configuration[TempVPNProviderKey.remainingSeconds] as? Int
-                ?? 0,
-            "not_after": server?.notAfter
-                ?? configuration[TempVPNProviderKey.notAfter] as? String
-                ?? "unknown",
+            "remaining_seconds": remainingSeconds,
+            "not_after": notAfter,
             "server_state": server?.state ?? "unavailable",
-        ], json: json)
+            "node_name": configuration[TempVPNProviderKey.nodeName] as? String ?? "unknown",
+            "country_code": configuration[TempVPNProviderKey.countryCode] as? String ?? "unknown",
+            "city": configuration[TempVPNProviderKey.city] as? String ?? "unknown",
+            "region": configuration[TempVPNProviderKey.region] as? String ?? "unknown",
+        ]
+        try emit(result, json: json)
     }
 
     private static func disconnect(json: Bool) async throws {
@@ -176,13 +225,40 @@ struct TempVPNCLI {
 
     static let usage = """
     Usage:
-      tempvpnctl select [--registry-url <url>] [--region <region>] [--node-url <url>] [--json]
-      tempvpnctl connect --session-response <path|-> [--node-url <selected-url>] [--json]
+      tempvpnctl select [--registry-url <url>] [--country <ISO-2>] [--city <city>]
+                        [--region <region>] [--selection-policy lowest-latency]
+                        [--node-url <url>] [--json]
+      tempvpnctl check --node-url <selected-url> [--json]
+      tempvpnctl connect --session-response <path|-> --node-url <selected-url>
+                         [--node-name <name>] [--country-code <ISO-2>]
+                         [--subdivision-code <code>] [--city <city>]
+                         [--region <region>] [--json]
       tempvpnctl status [--json]
       tempvpnctl disconnect [--json]
       tempvpnctl --version
 
     Payment is separate: select a node, pay that exact node's POST /sessions with
-    mppx, then pass the paid JSON response to `tempvpnctl connect`.
+    mppx, then pass the paid JSON response to `tempvpnctl connect`. Run `check`
+    immediately before mppx so a draining or full node fails before payment.
+    """
+}
+
+func wireGuardQuickConfiguration(
+    sessionId: String,
+    assignedIP: String,
+    serverPublicKey: String,
+    endpoint: String
+) -> String {
+    """
+    [Interface]
+    PrivateKey = keychain:\(sessionId)
+    Address = \(assignedIP)
+    DNS = 1.1.1.1
+
+    [Peer]
+    PublicKey = \(serverPublicKey)
+    Endpoint = \(endpoint)
+    AllowedIPs = 0.0.0.0/0, ::/0
+    PersistentKeepalive = 25
     """
 }

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use crate::error::{Error, Result};
 
@@ -22,7 +22,17 @@ pub enum Command {
     Heartbeat,
     Config(ConfigArgs),
     Select(SelectArgs),
+    Check(CheckArgs),
     Status,
+}
+
+#[derive(Debug, Args)]
+pub struct CheckArgs {
+    #[arg(long)]
+    pub node_url: String,
+
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -96,6 +106,14 @@ pub struct ConfigArgs {
 
 #[derive(Debug, Clone, Default, Args)]
 pub struct SelectionArgs {
+    /// Only consider nodes advertising this ISO 3166-1 alpha-2 country code.
+    #[arg(long)]
+    pub country: Option<String>,
+
+    /// Only consider nodes advertising this city.
+    #[arg(long)]
+    pub city: Option<String>,
+
     /// Only consider nodes advertising this region.
     #[arg(long)]
     pub region: Option<String>,
@@ -103,6 +121,16 @@ pub struct SelectionArgs {
     /// Use this node directly, bypassing registry discovery.
     #[arg(long)]
     pub node_url: Option<String>,
+
+    /// Policy used to rank eligible nodes from this device.
+    #[arg(long, value_enum, default_value_t)]
+    pub selection_policy: SelectionPolicy,
+}
+
+#[derive(Debug, Clone, Copy, Default, ValueEnum)]
+pub enum SelectionPolicy {
+    #[default]
+    LowestLatency,
 }
 
 fn parse_duration_seconds(raw: &str) -> Result<u64> {

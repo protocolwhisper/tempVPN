@@ -21,7 +21,7 @@ context: |
 
 rules:
   proposal:
-    - Identify every affected surface: node daemon, registry, Linux client, macOS client, agent skill, configuration, and infrastructure.
+    - "Identify every affected surface: node daemon, registry, Linux client, macOS client, agent skill, configuration, and infrastructure."
     - State whether the change alters payment, credential, session-expiry, or network-routing behavior.
     - Include compatibility and rollback considerations for protocol or configuration changes.
   specs:
