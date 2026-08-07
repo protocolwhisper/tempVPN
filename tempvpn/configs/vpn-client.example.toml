@@ -1,6 +1,8 @@
 # Copy locally for optional overrides. The client pays with mppx, using the
 # account created by https://mpp.dev/quickstart/agent.
-node_url = "http://USA_VPS_IP:8080"
+registry_url = "https://registry.example.com"
+catalog_cache_file = "/tmp/tempvpn-nodes.json"
+catalog_cache_ttl_seconds = 86400
 mppx_command = "mppx"
 # mppx_account = "default"
 # mppx_config = "mppx.config.ts"
@@ -12,6 +14,6 @@ wg_quick_command = "wg-quick"
 wg_command = "wg"
 interface_name = "vpnclient0"
 
-# Optional but recommended. If unset, vpn-client compares against the host
-# portion of the daemon session endpoint when it is an IP address.
+# Optional operator override. By default the selected node's advertised
+# expected_exit_ip is used.
 expected_exit_ip = "USA_VPS_IP"

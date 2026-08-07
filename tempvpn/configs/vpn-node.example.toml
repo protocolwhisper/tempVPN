@@ -1,12 +1,34 @@
 # Copy to vpn-node.toml on the USA VPS and keep the admin token secret.
 bind_addr = "0.0.0.0:8080"
 admin_token = "change-me"
+node_id = "us-central1"
+node_name = "US Central"
+node_region = "us-central1"
+# Structured location is used for country/city discovery. Country codes are
+# normalized and validated as ISO 3166-1 alpha-2 values.
+node_country_code = "US"
+node_subdivision_code = "US-IA"
+# node_city = "Des Moines"
+# Set false before draining a node; existing paid sessions are unaffected.
+accepting_sessions = true
+public_api_url = "http://USA_VPS_IP:8080"
+expected_exit_ip = "USA_VPS_IP"
+# Enable on the daemon serving the public catalog. It can also remain an exit node.
+# registry_token is mandatory in registry mode and is separate from admin_token.
+registry_mode = false
+# Set these on exit nodes, including a registry daemon that should advertise itself.
+# registry_url = "https://registry.example.com"
+# registry_token = "separate-server-only-token"
+registry_refresh_seconds = 30
+registry_lease_seconds = 90
 wg_interface = "wg0"
 wg_command = "wg"
 server_public_key = "USA_NODE_PUBLIC_KEY"
 endpoint = "USA_VPS_IP:51820"
 tunnel_cidr = "10.8.0.0/24"
 max_duration_seconds = 3600
+grace_period_seconds = 604800
+stale_timeout_seconds = 90
 sweep_interval_seconds = 10
 cleanup_on_shutdown = true
 mock_wg = false
@@ -14,3 +36,36 @@ mpp_rpc_url = "https://rpc.moderato.tempo.xyz"
 mpp_realm = "localhost:8080"
 mpp_payment_currency = "0x20c0000000000000000000000000000000000000"
 mpp_payment_recipient = "0xB01E80a8CD7C72589f30D2004aeb60937a2150d3"
+
+# Fixed paid sessions use explicit in-memory mode by default for isolated development.
+fixed_session_mode = "memory"
+
+# Coordinator mode is used by persistent blue/green node generations. The URL is
+# the private mTLS listener, never the public registry URL.
+# fixed_session_mode = "coordinator"
+# coordinator_url = "https://coordinator.internal:8443"
+# coordinator_logical_node = "us-central1"
+# coordinator_generation_id = "green-2026-08-07"
+# coordinator_root_ca_path = "/etc/tempvpn/coordinator-root-ca.pem"
+# coordinator_certificate_path = "/etc/tempvpn/node-certificate.pem"
+# coordinator_private_key_path = "/etc/tempvpn/node-private-key.pem"
+
+# Tempo TIP-1034 Session v2 streaming is additive and disabled by default.
+# Local development may use memory. Never select memory in production.
+mpp_streaming_enabled = false
+mpp_streaming_mode = "development"
+mpp_chain_id = 42431
+mpp_session_reserve = "0x4d50500000000000000000000000000000000000"
+mpp_session_operator = "0xB01E80a8CD7C72589f30D2004aeb60937a2150d3"
+mpp_session_unit_amount = 1000
+mpp_session_billing_interval_seconds = 60
+mpp_session_suggested_reserve = 10000
+mpp_session_min_voucher_delta = 1000
+mpp_session_grace_period_seconds = 30
+mpp_session_store = "memory"
+
+# For production set:
+# mpp_streaming_mode = "production"
+# mpp_session_store = "sqlite"
+# mpp_session_sqlite_path = "/var/lib/tempvpn/mpp-session-v2.sqlite"
+# Supply the close key through VPN_NODE_MPP_SESSION_CLOSE_PRIVATE_KEY, not TOML.

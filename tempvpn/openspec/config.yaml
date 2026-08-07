@@ -1,0 +1,36 @@
+schema: spec-driven
+
+context: |
+  tempVPN provides paid, temporary WireGuard access through independently operated
+  VPN nodes. A registry advertises leased node records; Linux and macOS clients
+  select a healthy node, purchase a node-bound session through Tempo MPP, and
+  activate that session with a locally generated WireGuard public key.
+
+  Server: Rust/Axum daemon in node/linux. Sessions and the registry catalog are
+  currently in memory. The daemon manages WireGuard peers and tunnel addresses.
+  Linux client: Rust CLI using wg and wg-quick.
+  macOS client: signed headless app, tempvpnctl, Network Extension, and WireGuardKit.
+  Infrastructure: Terraform and Linux startup configuration.
+
+  Security invariants:
+  - Client private keys never leave the client.
+  - Payment and all lifecycle calls remain bound to the selected node.
+  - Registry-write and daemon-admin credentials are never client credentials.
+  - Normal paid-client disconnect pauses a session; it never deletes or revokes it.
+  - Windows is not supported.
+
+rules:
+  proposal:
+    - "Identify every affected surface: node daemon, registry, Linux client, macOS client, agent skill, configuration, and infrastructure."
+    - State whether the change alters payment, credential, session-expiry, or network-routing behavior.
+    - Include compatibility and rollback considerations for protocol or configuration changes.
+  specs:
+    - Describe observable contracts and security invariants, not Rust or Swift implementation details.
+    - Include failure, cleanup, retry, and cross-platform scenarios when applicable.
+    - Use normative SHALL or MUST language and give every requirement at least one scenario.
+  design:
+    - Explain ownership of secrets, persistent state, and cleanup responsibilities.
+    - Call out intentional Linux and macOS differences.
+  tasks:
+    - Include automated tests for server behavior and both supported clients when their contracts change.
+    - Include documentation and agent-skill updates when user-visible workflow changes.

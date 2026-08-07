@@ -1,0 +1,551 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		8C64396058594AF38C798C5C /* TempoVPNApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 102A27ED52EE4F6CB25641F6 /* TempoVPNApp.swift */; };
+		4E8063E3E1D14E0783F9F547 /* PacketTunnelProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C1D21DD72B4436BA7ECB929 /* PacketTunnelProvider.swift */; };
+		562A5DD900734819A7497204 /* TunnelConfiguration+WgQuickConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF328D52FF9E406A81EEE51F /* TunnelConfiguration+WgQuickConfig.swift */; };
+		959A1EDC7CE74B9C814A9CF4 /* String+ArrayConversion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30618318A0A24D558E09C96B /* String+ArrayConversion.swift */; };
+		A11E91C4C81F4E2399D09A11 /* error.swift in PacketTunnel Sources */ = {isa = PBXBuildFile; fileRef = B11E91C4C81F4E2399D09A11 /* error.swift */; };
+		A22E91C4C81F4E2399D09A22 /* helpers.swift in PacketTunnel Sources */ = {isa = PBXBuildFile; fileRef = B22E91C4C81F4E2399D09A22 /* helpers.swift */; };
+		D8F6FD6D76ED46A69870BF52 /* TempoVPNProfile.swift in Extension Sources */ = {isa = PBXBuildFile; fileRef = 7D29FBC91F0D4F09897E2E66 /* TempoVPNProfile.swift */; };
+		B552FA199F284579AAC942A4 /* WireGuardKit in Frameworks */ = {isa = PBXBuildFile; productRef = C7F8D0726BE94217BD582607 /* WireGuardKit */; };
+		FC79FD78B65148B4A5A7FD0C /* TempVPNPacketTunnel.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 51D4107FBA624813BC25A7FF /* TempVPNPacketTunnel.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		C3BE56800D00443489045A6F /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 8CBC45C89E8A4D39A48AC826 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 58FEFC0D86834D1393BF4D9D;
+			remoteInfo = TempVPNPacketTunnel;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		F81498184B734A88AA0BE09F /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				FC79FD78B65148B4A5A7FD0C /* TempVPNPacketTunnel.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		F329C5E175A448E493D7E1FA /* TempVPN.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TempVPN.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		51D4107FBA624813BC25A7FF /* TempVPNPacketTunnel.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = TempVPNPacketTunnel.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		102A27ED52EE4F6CB25641F6 /* TempoVPNApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TempoVPNApp.swift; sourceTree = "<group>"; };
+		2C1D21DD72B4436BA7ECB929 /* PacketTunnelProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacketTunnelProvider.swift; sourceTree = "<group>"; };
+		DF328D52FF9E406A81EEE51F /* TunnelConfiguration+WgQuickConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TunnelConfiguration+WgQuickConfig.swift"; sourceTree = "<group>"; };
+		30618318A0A24D558E09C96B /* String+ArrayConversion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "String+ArrayConversion.swift"; sourceTree = "<group>"; };
+		B11E91C4C81F4E2399D09A11 /* error.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = error.swift; sourceTree = "<group>"; };
+		B22E91C4C81F4E2399D09A22 /* helpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = helpers.swift; sourceTree = "<group>"; };
+		7D29FBC91F0D4F09897E2E66 /* TempoVPNProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TempoVPNProfile.swift; sourceTree = "<group>"; };
+		B2DDD3BCEC0543A6846DA31E /* HostApp Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		B1A8A566151248209D29F58E /* TempoVPN.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TempVPN.entitlements; sourceTree = "<group>"; };
+		3092D17337D9494589A87B34 /* PacketTunnel Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		9DEC7357060D4B7B90E5017A /* PacketTunnel.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = PacketTunnel.entitlements; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		84597E23E40F47CAA906BAC2 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E53847D3DE494A45B56C3F1B /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B552FA199F284579AAC942A4 /* WireGuardKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		CCF9FBD31D6641E5A030C3D9 /* Main Group */ = {
+			isa = PBXGroup;
+			children = (
+				DA418C1E07E94B24B6F77882 /* HostApp */,
+				BA3F48ABD9524FABA957DC64 /* PacketTunnel */,
+				0726AEFE0CE64E528813B0F8 /* Shared */,
+				737A8402962148D9BECC5473 /* Resources */,
+				C8145AE7C3BA488A8987DAB5 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		DA418C1E07E94B24B6F77882 /* HostApp */ = {
+			isa = PBXGroup;
+			children = (
+				102A27ED52EE4F6CB25641F6 /* TempoVPNApp.swift */,
+			);
+			path = HostApp;
+			sourceTree = "<group>";
+		};
+		BA3F48ABD9524FABA957DC64 /* PacketTunnel */ = {
+			isa = PBXGroup;
+			children = (
+				2C1D21DD72B4436BA7ECB929 /* PacketTunnelProvider.swift */,
+				B11E91C4C81F4E2399D09A11 /* error.swift */,
+				B22E91C4C81F4E2399D09A22 /* helpers.swift */,
+				DF328D52FF9E406A81EEE51F /* TunnelConfiguration+WgQuickConfig.swift */,
+				30618318A0A24D558E09C96B /* String+ArrayConversion.swift */,
+			);
+			path = PacketTunnel;
+			sourceTree = "<group>";
+		};
+		0726AEFE0CE64E528813B0F8 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				7D29FBC91F0D4F09897E2E66 /* TempoVPNProfile.swift */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		737A8402962148D9BECC5473 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				1176DCE4965C4E329C0E293F /* HostApp */,
+				93F9979F4A99442EB80655CF /* PacketTunnel */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		1176DCE4965C4E329C0E293F /* HostApp */ = {
+			isa = PBXGroup;
+			children = (
+				B2DDD3BCEC0543A6846DA31E /* HostApp Info.plist */,
+				B1A8A566151248209D29F58E /* TempoVPN.entitlements */,
+			);
+			path = HostApp;
+			sourceTree = "<group>";
+		};
+		93F9979F4A99442EB80655CF /* PacketTunnel */ = {
+			isa = PBXGroup;
+			children = (
+				3092D17337D9494589A87B34 /* PacketTunnel Info.plist */,
+				9DEC7357060D4B7B90E5017A /* PacketTunnel.entitlements */,
+			);
+			path = PacketTunnel;
+			sourceTree = "<group>";
+		};
+		C8145AE7C3BA488A8987DAB5 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				F329C5E175A448E493D7E1FA /* TempVPN.app */,
+				51D4107FBA624813BC25A7FF /* TempVPNPacketTunnel.appex */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		F7EEABAA6F514A8EAFC46753 /* TempVPN */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F2EF8C46BBFD49CEADF187DD /* Build configuration list for PBXNativeTarget "TempVPN" */;
+			buildPhases = (
+				8CA25DCA62EF4CCBA1B44D49 /* Sources */,
+				84597E23E40F47CAA906BAC2 /* Frameworks */,
+				F81498184B734A88AA0BE09F /* Embed App Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				F7A5639AE32F4CF9A02D4F1A /* PBXTargetDependency */,
+			);
+			name = TempVPN;
+			productName = TempVPN;
+			productReference = F329C5E175A448E493D7E1FA /* TempVPN.app */;
+			productType = "com.apple.product-type.application";
+		};
+		58FEFC0D86834D1393BF4D9D /* TempVPNPacketTunnel */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 7D2296C702654D89A891DB85 /* Build configuration list for PBXNativeTarget "TempVPNPacketTunnel" */;
+			buildPhases = (
+				2E5BF45359C94D52BA687BCD /* Build WireGuard Go Backend */,
+				AE2CD65AF14D4ED192E54080 /* Sources */,
+				E53847D3DE494A45B56C3F1B /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = TempVPNPacketTunnel;
+			packageProductDependencies = (
+				C7F8D0726BE94217BD582607 /* WireGuardKit */,
+			);
+			productName = TempVPNPacketTunnel;
+			productReference = 51D4107FBA624813BC25A7FF /* TempVPNPacketTunnel.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		8CBC45C89E8A4D39A48AC826 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					F7EEABAA6F514A8EAFC46753 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+					58FEFC0D86834D1393BF4D9D = {
+						CreatedOnToolsVersion = 16.0;
+					};
+				};
+			};
+			buildConfigurationList = 0BA04B61BB01410E8DCE35F3 /* Build configuration list for PBXProject "TempVPN" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = CCF9FBD31D6641E5A030C3D9 /* Main Group */;
+			packageReferences = (
+				BC0083601F2F4F0D9753B633 /* XCLocalSwiftPackageReference "wireguard-apple" */,
+			);
+			productRefGroup = C8145AE7C3BA488A8987DAB5 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				F7EEABAA6F514A8EAFC46753 /* TempVPN */,
+				58FEFC0D86834D1393BF4D9D /* TempVPNPacketTunnel */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		2E5BF45359C94D52BA687BCD /* Build WireGuard Go Backend */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/Vendor/wireguard-apple/Sources/WireGuardKitGo/go.mod",
+				"$(SRCROOT)/Vendor/wireguard-apple/Sources/WireGuardKitGo/go.sum",
+				"$(SRCROOT)/Vendor/wireguard-apple/Sources/WireGuardKitGo/api-apple.go",
+				"$(SRCROOT)/Vendor/wireguard-apple/Sources/WireGuardKitGo/Makefile",
+			);
+			name = "Build WireGuard Go Backend";
+			outputPaths = (
+				"$(CONFIGURATION_BUILD_DIR)/libwg-go.a",
+				"$(CONFIGURATION_BUILD_DIR)/wireguard-go-version.h",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -eu\nexport PATH=\"$PATH:/usr/local/bin:/opt/homebrew/bin\"\nif ! command -v go >/dev/null 2>&1; then\n  echo \"error: Go is required to build WireGuardKitGo. Install Go with Homebrew or the official installer, then rebuild.\" >&2\n  exit 1\nfi\nwork_dir=$(mktemp -d /tmp/tempvpn-wg-go.XXXXXX)\ntrap 'rm -rf \"$work_dir\"' EXIT\nmake -C \"$SRCROOT/Vendor/wireguard-apple/Sources/WireGuardKitGo\" build version-header \\\n  ARCHS=\"$ARCHS\" \\\n  PLATFORM_NAME=\"$PLATFORM_NAME\" \\\n  SDKROOT=\"$SDKROOT\" \\\n  DESTDIR=\"$work_dir/out\" \\\n  BUILDDIR=\"$work_dir/build\"\nmkdir -p \"$CONFIGURATION_BUILD_DIR\"\ncp \"$work_dir/out/libwg-go.a\" \"$CONFIGURATION_BUILD_DIR/libwg-go.a\"\ncp \"$work_dir/out/wireguard-go-version.h\" \"$CONFIGURATION_BUILD_DIR/wireguard-go-version.h\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		8CA25DCA62EF4CCBA1B44D49 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				8C64396058594AF38C798C5C /* TempoVPNApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AE2CD65AF14D4ED192E54080 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				4E8063E3E1D14E0783F9F547 /* PacketTunnelProvider.swift in Sources */,
+				A11E91C4C81F4E2399D09A11 /* error.swift in PacketTunnel Sources */,
+				A22E91C4C81F4E2399D09A22 /* helpers.swift in PacketTunnel Sources */,
+				562A5DD900734819A7497204 /* TunnelConfiguration+WgQuickConfig.swift in Sources */,
+				959A1EDC7CE74B9C814A9CF4 /* String+ArrayConversion.swift in Sources */,
+				D8F6FD6D76ED46A69870BF52 /* TempoVPNProfile.swift in Extension Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		F7A5639AE32F4CF9A02D4F1A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 58FEFC0D86834D1393BF4D9D /* TempVPNPacketTunnel */;
+			targetProxy = C3BE56800D00443489045A6F /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		B3EA24B780154E339C4D0DB3 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		11586BA136D647ADA30594F5 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+			};
+			name = Release;
+		};
+		840C03BE9ECE4374B1EE250E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Resources/HostApp/TempVPN.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Resources/HostApp/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../PlugIns",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.tempo.tempvpn;
+				PRODUCT_NAME = TempVPN;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		B94BE1999E87433CBE9552F5 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Resources/HostApp/TempVPN.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Resources/HostApp/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../PlugIns",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.tempo.tempvpn;
+				PRODUCT_NAME = TempVPN;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		C29F13E1C7B34F9EA28F8D44 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Resources/PacketTunnel/PacketTunnel.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Resources/PacketTunnel/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.tempo.tempvpn.PacketTunnel;
+				PRODUCT_NAME = TempVPNPacketTunnel;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		6B47717B524C4AAABBE477A4 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Resources/PacketTunnel/PacketTunnel.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Resources/PacketTunnel/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.tempo.tempvpn.PacketTunnel;
+				PRODUCT_NAME = TempVPNPacketTunnel;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		0BA04B61BB01410E8DCE35F3 /* Build configuration list for PBXProject "TempVPN" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B3EA24B780154E339C4D0DB3 /* Debug */,
+				11586BA136D647ADA30594F5 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		F2EF8C46BBFD49CEADF187DD /* Build configuration list for PBXNativeTarget "TempVPN" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				840C03BE9ECE4374B1EE250E /* Debug */,
+				B94BE1999E87433CBE9552F5 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		7D2296C702654D89A891DB85 /* Build configuration list for PBXNativeTarget "TempVPNPacketTunnel" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C29F13E1C7B34F9EA28F8D44 /* Debug */,
+				6B47717B524C4AAABBE477A4 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		BC0083601F2F4F0D9753B633 /* XCLocalSwiftPackageReference "wireguard-apple" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = "Vendor/wireguard-apple";
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		C7F8D0726BE94217BD582607 /* WireGuardKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = BC0083601F2F4F0D9753B633 /* XCLocalSwiftPackageReference "wireguard-apple" */;
+			productName = WireGuardKit;
+		};
+/* End XCSwiftPackageProductDependency section */
+
+	};
+	rootObject = 8CBC45C89E8A4D39A48AC826 /* Project object */;
+}
