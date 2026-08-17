@@ -86,11 +86,13 @@ target/tempvpnctl
 An unsigned build verifies compilation but cannot install or activate the
 Packet Tunnel extension.
 
-## Signing later
+## Signing for local use
 
-After joining the Apple Developer Program, configure the application and
-extension identifiers for your team, then build with the same team and signing
-identity for both products:
+A paid Apple Developer Program membership is only required for Developer ID
+distribution and notarization. For a build that runs on this Mac, a free
+Apple ID is sufficient: add it under Xcode > Settings > Accounts to get a
+Personal Team, then build with the same team and signing identity for both
+products:
 
 ```bash
 export APPLE_DEVELOPMENT_TEAM="TEAMID"
@@ -99,8 +101,11 @@ export CODE_SIGN_IDENTITY="Apple Development: Your Name (TEAMID)"
 ```
 
 The application, extension, and CLI share the Keychain group
-`TEAMID.com.protocolwhisper.tempvpn.shared`. Production downloads additionally
-need Developer ID distribution signing and notarization.
+`TEAMID.com.protocolwhisper.tempvpn.shared`. If Xcode reports the bundle
+identifier `com.tempo.tempvpn` as unavailable for your team, choose a unique
+bundle ID prefix for the app and Packet Tunnel targets before building.
+Production downloads additionally need Developer ID distribution signing and
+notarization.
 
 Install only signed products. The installer deliberately refuses unsigned
 artifacts and does not invoke `sudo` itself:
