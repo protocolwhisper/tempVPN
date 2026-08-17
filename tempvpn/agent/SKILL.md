@@ -232,6 +232,31 @@ the explicitly built Linux path). If neither the required binary nor a trusted
 source/release is available, stop and report the missing client before
 discovery or payment.
 
+Until a signed macOS release is published, the supported macOS bootstrap is a
+locally built, development-signed install; a free Apple ID is enough (no paid
+Apple Developer Program required):
+
+1. On the user's Mac, install Xcode and Go (`brew install go`) and clone the
+   trusted source checkout.
+2. Add any free Apple ID under Xcode > Settings > Accounts; it yields a
+   Personal Team with a team ID.
+3. Build signed products:
+
+```bash
+export APPLE_DEVELOPMENT_TEAM="TEAMID"
+export CODE_SIGN_IDENTITY="Apple Development"
+./clients/macos/build-macos-products.sh
+```
+
+4. Request approval, then install with `sudo ./clients/macos/install-tempvpnctl.sh`.
+
+A development-signed local build is signed, passes the installer's signature
+verification, and runs on that Mac without notarization; locally built apps
+carry no Gatekeeper quarantine. If Xcode reports the bundle identifier
+`com.tempo.tempvpn` as unavailable for the personal team, pick a unique bundle
+ID prefix for the app and Packet Tunnel targets before building. Do not use
+unsigned `target/` artifacts for a tunnel.
+
 ## Distribute clients for users
 
 Do not tell end users to install a Rust crate. This workspace marks the client
