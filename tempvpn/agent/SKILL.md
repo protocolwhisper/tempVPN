@@ -1,6 +1,6 @@
 ---
 name: tempvpn
-description: Set up, preflight, connect, buy, verify, inspect, and disconnect temporary paid WireGuard VPN sessions through Tempo MPP on Linux or macOS. Use for natural requests such as "Connect 30 mins to Belgium", "use a Belgian VPN for one hour", "get me the fastest VPN in Singapore", "what does TempVPN need", "check whether TempVPN is ready", "show VPN status", or "disconnect the VPN". Normalizes duration and location into structured indexer filters, selects the fastest eligible node from the user's network, keeps private keys local, and pauses unused balance on disconnect.
+description: Set up, preflight, connect, buy, verify, inspect, and disconnect temporary paid WireGuard VPN sessions through Tempo MPP (one-time charge or Session v2 streaming) on Linux or macOS. Use for natural requests such as "Connect 30 mins to Belgium", "use a Belgian VPN for one hour", "get me the fastest VPN in Singapore", "what does TempVPN need", "check whether TempVPN is ready", "show VPN status", or "disconnect the VPN". Normalizes duration and location into structured indexer filters, selects the fastest eligible node from the user's network, keeps private keys local, and pauses unused balance on disconnect.
 ---
 
 # tempVPN
@@ -366,6 +366,54 @@ not affect Keychain access or contain private-key material.
 macOS may request one-time VPN profile approval on the first connection. This is
 not a recurring private-key or biometric prompt.
 
+## Streaming sessions (Tempo Session v2)
+
+Some nodes also offer metered streaming access at:
+
+```text
+GET /sessions/stream?client_public_key=<wireguard-public-key>&duration_seconds=<safety-cap>
+```
+
+Instead of buying a fixed duration up front, the client opens a Session v2
+payment channel reserve and the node charges one unit per billing interval
+while the tunnel stays up. Extending service time is a channel operation, not
+a new purchase. `duration_seconds` is a safety cap, not a prepaid amount.
+
+An unpaid request returns `402` with a `WWW-Authenticate: Payment` challenge:
+MPP method `tempo`, intent `session`, `sessionProtocol: "v2"`, with the
+currency, recipient, per-interval `unitAmount`, and a `suggestedDeposit` for
+the channel reserve. Answer it with an `Authorization: Payment` credential
+carrying a Session v2 payload:
+
+- `Open` — open and fund a new channel on the TIP-20 reserve contract
+- `Voucher` — newer cumulative signed voucher for an existing channel
+- `TopUp` — on-chain `topUp` transaction that adds deposit to the reserve
+- `Close` — finalize the channel and end the session
+
+On success the node responds `200 text/event-stream` with an
+`x-vpn-session-id` header. The SSE stream carries:
+
+- `message` JSON `type: "vpn-session"` — connection details: `session`,
+  `channelId`, `billingIntervalSeconds`, `unitAmount`
+- `message` JSON `type: "paid-interval"` — one billed unit: `sessionId`,
+  `channelId`, `units`, `spent`
+- `payment-need-voucher` — accepted value cannot cover the next interval:
+  `{channelId, requiredCumulative, acceptedCumulative, deposit}`; the node
+  pauses the WireGuard peer and does not bill the paused period
+- `payment-receipt` — final receipt with accepted cumulative value, `spent`,
+  and `units` when the stream ends
+
+To extend or resume, submit a newer voucher (or an on-chain `TopUp`) whose
+cumulative amount reaches `requiredCumulative`. Use `HEAD /sessions/stream`
+with the same query parameters to submit channel operations (voucher, top-up,
+or close) without consuming the SSE body. The same logical session resumes
+once the new state verifies. If the client does not replenish within the
+node's grace period, the peer is removed and the stream ends with a final
+receipt.
+
+If the node answers `404` with "streaming payments are disabled", fall back to
+the one-time `POST /sessions` purchase flow above.
+
 ## Verify before claiming success
 
 After the tunnel reports connected:
@@ -406,6 +454,8 @@ token, or registry-write token.
   the existing session response private and retry the same logical node only
   when its API reports healthy; durable mutations fail closed.
 - **Exit verification fails:** tear down the local tunnel and pause the session.
+- **Stream emits `payment-need-voucher`:** replenish the same channel with a
+  newer voucher or an on-chain top-up; do not start a second paid session.
 - **Temporary files:** remove only the exact files created for this workflow
   after they are no longer required.
 
