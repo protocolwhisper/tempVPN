@@ -38,7 +38,10 @@ fi
 
 if [[ -n "${APPLE_DEVELOPMENT_TEAM:-}" ]]; then
   arguments+=(-allowProvisioningUpdates DEVELOPMENT_TEAM="$APPLE_DEVELOPMENT_TEAM")
-  if [[ -n "${XCODE_CODE_SIGN_IDENTITY:-}" ]]; then
+  requested_identity=${XCODE_CODE_SIGN_IDENTITY:-${CODE_SIGN_IDENTITY:-}}
+  if [[ "$requested_identity" == "Developer ID Application"* ]]; then
+    arguments+=(CODE_SIGN_IDENTITY="Apple Development")
+  elif [[ -n "${XCODE_CODE_SIGN_IDENTITY:-}" ]]; then
     arguments+=(CODE_SIGN_IDENTITY="$XCODE_CODE_SIGN_IDENTITY")
   elif [[ "${CODE_SIGN_IDENTITY:-}" == "Apple Development:"* ]]; then
     arguments+=(CODE_SIGN_IDENTITY="Apple Development")
@@ -46,9 +49,6 @@ if [[ -n "${APPLE_DEVELOPMENT_TEAM:-}" ]]; then
     arguments+=(CODE_SIGN_IDENTITY="Developer ID Application")
   elif [[ -n "${CODE_SIGN_IDENTITY:-}" ]]; then
     arguments+=(CODE_SIGN_IDENTITY="$CODE_SIGN_IDENTITY")
-  fi
-  if [[ "${XCODE_CODE_SIGN_IDENTITY:-${CODE_SIGN_IDENTITY:-}}" == "Developer ID Application"* ]]; then
-    arguments+=(ENABLE_HARDENED_RUNTIME=YES)
   fi
   if [[ -n "${APPLE_AUTH_KEY_PATH:-}" ]]; then
     : "${APPLE_AUTH_KEY_ID:?Set APPLE_AUTH_KEY_ID with APPLE_AUTH_KEY_PATH}"
@@ -82,6 +82,49 @@ test -d "$product"
 mkdir -p "$(dirname "$output")"
 rm -rf "$output"
 ditto "$product" "$output"
+
+if [[ "${requested_identity:-}" == "Developer ID Application"* ]]; then
+  : "${CODE_SIGN_IDENTITY:?Set CODE_SIGN_IDENTITY to the exact Developer ID Application identity}"
+  profile_directory="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
+  [[ -d "$profile_directory" ]] || {
+    echo "Xcode-managed provisioning profiles are missing." >&2
+    exit 1
+  }
+
+  direct_profile() {
+    local bundle_identifier=$1 profile name
+    for profile in "$profile_directory"/*.provisionprofile; do
+      [[ -f "$profile" ]] || continue
+      name=$(security cms -D -i "$profile" 2>/dev/null | plutil -extract Name raw - 2>/dev/null || true)
+      if [[ "$name" == "Mac Team Direct Provisioning Profile: $bundle_identifier" ]]; then
+        printf '%s\n' "$profile"
+        return 0
+      fi
+    done
+    echo "Missing Xcode-managed Direct provisioning profile for $bundle_identifier." >&2
+    return 1
+  }
+
+  extension="$output/Contents/PlugIns/TempVPNPacketTunnel.appex"
+  app_profile=$(direct_profile com.tempo.tempvpn)
+  extension_profile=$(direct_profile com.tempo.tempvpn.PacketTunnel)
+  cp "$app_profile" "$output/Contents/embedded.provisionprofile"
+  cp "$extension_profile" "$extension/Contents/embedded.provisionprofile"
+
+  app_entitlements="$root/target/TempVPN-direct.entitlements"
+  extension_entitlements="$root/target/TempVPNPacketTunnel-direct.entitlements"
+  cp "$root/clients/macos/Resources/HostApp/TempVPN.entitlements" "$app_entitlements"
+  cp "$root/clients/macos/Resources/PacketTunnel/PacketTunnel.entitlements" "$extension_entitlements"
+  for entitlements in "$app_entitlements" "$extension_entitlements"; do
+    /usr/libexec/PlistBuddy -c "Set :com.apple.developer.networking.networkextension:0 packet-tunnel-provider-systemextension" "$entitlements"
+    /usr/libexec/PlistBuddy -c "Set :keychain-access-groups:0 ${APPLE_DEVELOPMENT_TEAM}.com.protocolwhisper.tempvpn.shared" "$entitlements"
+  done
+
+  codesign --force --options runtime --timestamp --sign "$CODE_SIGN_IDENTITY" \
+    --entitlements "$extension_entitlements" "$extension"
+  codesign --force --options runtime --timestamp --sign "$CODE_SIGN_IDENTITY" \
+    --entitlements "$app_entitlements" "$output"
+fi
 
 echo "Built headless host at $output"
 if [[ -z "${APPLE_DEVELOPMENT_TEAM:-}" ]]; then
