@@ -118,6 +118,14 @@ the native pair:
 sudo ./clients/macos/install-tempvpnctl.sh
 ```
 
+End users do not build this checkout. When the TempVPN skill finds the native
+macOS client missing, it downloads the latest notarized package from the
+project's GitHub Releases, verifies the SHA-256 checksum, pinned Apple team,
+Developer ID signatures, bundle identifiers, entitlements, and stapled
+notarization ticket, then offers the verified package through macOS Installer.
+See [`clients/macos/README.md`](clients/macos/README.md) for the maintainer
+release command.
+
 Select before paying. The selected node URL must be used for both MPP payment
 and session import:
 
