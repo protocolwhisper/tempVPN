@@ -127,6 +127,11 @@ package; and an accepted, stapled Apple notarization ticket. Store notarization
 credentials in Keychain with `xcrun notarytool store-credentials` or supply an
 App Store Connect API key through the documented environment variables.
 
+Developer ID builds use Xcode-managed `Mac Team Direct Provisioning Profile`
+profiles for both bundle identifiers and the direct-distribution Network
+Extension entitlement, `packet-tunnel-provider-systemextension`. Development
+builds continue to use `packet-tunnel-provider`.
+
 Authenticate `gh`, ensure the release commit is on a publishable branch, then
 run:
 
