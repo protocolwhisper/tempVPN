@@ -1,6 +1,6 @@
 ---
 name: tempvpn
-description: Set up, preflight, connect, buy, verify, inspect, and disconnect temporary paid WireGuard VPN sessions through Tempo MPP (one-time charge or Session v2 streaming) on Linux or macOS. Use for natural requests such as "Connect 30 mins to Belgium", "use a Belgian VPN for one hour", "get me the fastest VPN in Singapore", "what does TempVPN need", "check whether TempVPN is ready", "show VPN status", or "disconnect the VPN". Normalizes duration and location into structured indexer filters, selects the fastest eligible node from the user's network, keeps private keys local, and pauses unused balance on disconnect.
+description: Set up, securely bootstrap, preflight, connect, buy, verify, inspect, and disconnect temporary paid WireGuard VPN sessions through Tempo MPP (one-time charge or Session v2 streaming) on Linux or macOS. Use for natural requests such as "Connect 30 mins to Belgium", "use a Belgian VPN for one hour", "install TempVPN", "get me the fastest VPN in Singapore", "what does TempVPN need", "check whether TempVPN is ready", "show VPN status", or "disconnect the VPN". Downloads only verified native releases, normalizes duration and location into structured indexer filters, selects the fastest eligible node from the user's network, keeps private keys local, and pauses unused balance on disconnect.
 ---
 
 # tempVPN
@@ -185,26 +185,30 @@ separate visible action and do not expose command output that could contain
 account or private-key material. `mppx account fund` supplies testnet tokens
 only; never present it as a production/mainnet funding method.
 
-On macOS, if installed products are missing and this skill is running from a
-TempVPN development checkout, locate the repository root by the presence of
-`clients/macos/build-macos-products.sh` and
-`clients/macos/install-tempvpnctl.sh`. The checkout may be one directory above
-this skill (for example `../`), but never assume that layout outside a verified
-checkout. Explain that a usable native build requires:
+On macOS, if either installed product is missing, offer the official native
+bootstrap before discovery or payment. Explain that it downloads a notarized
+package from the TempVPN GitHub release, verifies its checksum, Developer ID
+Installer signature, stapled notarization ticket, Apple team `T4295L8LL4`,
+bundle identifiers, nested code signatures, Network Extension entitlement, and
+shared Keychain group, then requires a normal macOS administrator prompt.
 
-- Xcode and Go;
-- an Apple Developer team and signing identity;
-- provisioning for the Packet Tunnel Network Extension and the shared Keychain
-  access group;
-- both products built by `clients/macos/build-macos-products.sh`; and
-- explicit administrator approval to run
-  `clients/macos/install-tempvpnctl.sh` and install the products into
-  `/Applications` and `/usr/local/bin`.
+After the user approves the download, create a private temporary directory and
+run `scripts/bootstrap-macos-client.sh --destination PRIVATE_DIR` relative to
+this skill. Do not override its manifest URL unless the user explicitly names a
+trusted developer/test release. Parse its JSON locally. Proceed only when it
+returns `ready_to_install: true`.
 
-Unsigned or ad-hoc products under `target/` may be used only to validate that
-the source compiles. Never install them or use them for a paid session. After a
-properly signed install, expect macOS to request one-time VPN profile approval
-on the first connection.
+Request installation approval separately, then open the verified `.pkg` with
+the macOS Installer UI. Never ask for, receive, or type the administrator
+password. Wait for the user to complete the system prompt, launch
+`/Applications/TempVPN.app` once with `open -gj`, and rerun full preflight.
+Remove only the exact private temporary directory after installation succeeds
+or the user cancels. Expect one-time VPN profile approval on first connection.
+
+Use a development checkout only for maintainer work when the release is
+unavailable. Unsigned, ad-hoc, or Apple Development artifacts under `target/`
+may validate compilation but must never be installed for an end user or used
+for a paid session.
 
 If a required client is missing, explain the installation action and request
 permission before downloading, installing, or using `sudo`. Installation and
@@ -223,7 +227,7 @@ for selection, live checks, connection, status, heartbeat, and disconnect:
 | Platform | One client to use | If it is absent |
 | --- | --- | --- |
 | Linux | `vpn-client` | In a verified checkout, build with `cargo build --release -p vpn-client-cli` and use `target/release/vpn-client`, or explain the trusted binary installation and request approval. Also install `wg` and `wg-quick` through the OS package manager. |
-| macOS | signed `tempvpnctl` plus `/Applications/TempVPN.app` | Build signed products with `clients/macos/build-macos-products.sh`, then request approval for `clients/macos/install-tempvpnctl.sh`; never use the unsigned `target/` artifacts for a tunnel. |
+| macOS | signed `tempvpnctl` plus `/Applications/TempVPN.app` | Bootstrap the verified notarized package with `scripts/bootstrap-macos-client.sh`, then request approval to open it in macOS Installer. |
 
 Do not run or present both platform branches. A development checkout does not
 mean the CLI is installed: resolve `command -v vpn-client` or
@@ -259,31 +263,29 @@ unsigned `target/` artifacts for a tunnel.
 
 ## Distribute clients for users
 
-Do not tell end users to install a Rust crate. This workspace marks the client
-package `publish = false`; Cargo source is a maintainer build input, not a
-stable distribution channel. The project must publish trusted client artifacts
-before the skill can bootstrap a user who has no checkout:
+Do not tell end users to install a Rust crate or build a checkout. This workspace
+marks the client package `publish = false`; source is a maintainer input, not a
+stable distribution channel.
 
 - **Linux:** CI builds `vpn-client` for each supported target with
   `cargo build --release -p vpn-client-cli`, packages each binary with a
   version and target name, and publishes SHA-256 checksums. Users still need
   the platform's `wg` and `wg-quick` packages; those are OS dependencies, not
   Rust crates.
-- **macOS:** CI builds the host app and CLI with the same Apple team, signs the
-  app, Packet Tunnel extension, and CLI, notarizes the distributable, and
-  publishes the app plus CLI together. Never distribute the unsigned
-  `target/` artifacts.
+- **macOS:** maintainers publish `TempVPN-VERSION-macos-ARCH.pkg` plus
+  `tempvpn-macos-manifest.json` in the same GitHub release. The stable manifest
+  is `https://github.com/protocolwhisper/tempVPN/releases/latest/download/tempvpn-macos-manifest.json`.
+  Never distribute unsigned, Apple Development, ad-hoc, unstapled, or
+  differently signed artifacts.
 - **Payment:** `mppx` remains a separate Node/npm CLI and is not bundled into
   either VPN client. If it is absent, explain the approved installation of the
   pinned/approved `mppx` release separately.
 
-When a trusted HTTPS release URL and checksum/signature policy are configured,
-the skill may offer to download and install the matching platform artifact
-after explicit user approval. Verify the artifact before installation, keep
-the temporary archive private, and never substitute a source checkout or an
-unverified URL. Without a published artifact source, the skill can diagnose the
-missing client and provide the maintainer build instructions, but it must stop
-before installation, discovery, or payment.
+Treat the bundled verifier and pinned Apple identity as the trust policy. A
+checksum from the manifest alone is insufficient. If download, signature,
+notarization, identifier, entitlement, architecture, version, or checksum
+verification fails, delete the exact temporary directory, stop before
+installation and payment, and report `needs native client signing/install`.
 
 ## Select the node
 

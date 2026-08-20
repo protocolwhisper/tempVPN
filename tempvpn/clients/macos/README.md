@@ -86,7 +86,7 @@ target/tempvpnctl
 An unsigned build verifies compilation but cannot install or activate the
 Packet Tunnel extension.
 
-## Signing for local use
+## Signing for local development
 
 A paid Apple Developer Program membership is only required for Developer ID
 distribution and notarization. For a build that runs on this Mac, a free
@@ -118,3 +118,37 @@ The installer places the invisible host in `/Applications/TempVPN.app`, the
 agent command in `/usr/local/bin/tempvpnctl`, and launches the host once to
 register the extension. macOS then requests one-time VPN approval on the first
 connection.
+
+## Publish the agent-installable package
+
+Public releases use Developer ID Application signing for the app, embedded
+Packet Tunnel extension, and CLI; Developer ID Installer signing for the
+package; and an accepted, stapled Apple notarization ticket. Store notarization
+credentials in Keychain with `xcrun notarytool store-credentials` or supply an
+App Store Connect API key through the documented environment variables.
+
+Authenticate `gh`, ensure the release commit is on a publishable branch, then
+run:
+
+```bash
+export TEMPVPN_VERSION="0.1.1"
+export TEMPVPN_BUILD_NUMBER="2"
+export APPLE_DEVELOPMENT_TEAM="T4295L8LL4"
+export DEVELOPER_ID_APPLICATION_IDENTITY="Developer ID Application: Name (T4295L8LL4)"
+export DEVELOPER_ID_INSTALLER_IDENTITY="Developer ID Installer: Name (T4295L8LL4)"
+export NOTARY_KEYCHAIN_PROFILE="tempvpn-notary"
+./clients/macos/publish-macos-release.sh
+```
+
+The publisher refuses `deploymaster`, a dirty tracked worktree, missing release
+identities, failed notarization, or failed package verification. It publishes:
+
+```text
+TempVPN-VERSION-macos-ARCH.pkg
+tempvpn-macos-manifest.json
+```
+
+The TempVPN skill fetches the latest manifest from GitHub Releases, downloads
+the matching package into a private temporary directory, checks SHA-256 and the
+pinned Apple identity/entitlements, and only then offers the package through
+macOS Installer. The agent never receives or types the administrator password.
