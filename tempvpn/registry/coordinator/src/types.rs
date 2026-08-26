@@ -261,6 +261,23 @@ impl CoordinationIdentity {
         }
     }
 
+    pub fn require_control_plane_or_logical_node(&self, logical_node: &str) -> crate::Result<()> {
+        match self {
+            Self::Operator => Ok(()),
+            Self::Node {
+                logical_node: authenticated_node,
+                ..
+            } if authenticated_node == logical_node => Ok(()),
+            Self::Node { .. } => Err(crate::Error::Forbidden),
+        }
+    }
+
+    pub fn require_control_plane_or_node(&self) -> crate::Result<()> {
+        match self {
+            Self::Operator | Self::Node { .. } => Ok(()),
+        }
+    }
+
     pub fn require_operator(&self) -> crate::Result<()> {
         match self {
             Self::Operator => Ok(()),

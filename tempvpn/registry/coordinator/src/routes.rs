@@ -214,7 +214,7 @@ async fn create_payment_intent(
     Extension(identity): Extension<CoordinationIdentity>,
     Json(request): Json<PaymentIntentRequest>,
 ) -> Result<Json<crate::types::PaymentIntent>> {
-    identity.require_logical_node(&request.logical_node)?;
+    identity.require_control_plane_or_logical_node(&request.logical_node)?;
     Ok(Json(
         state
             .store
@@ -239,7 +239,7 @@ async fn redeem_payment(
         .store
         .payment_intent_logical_node(&request.intent_id)
         .await?;
-    identity.require_logical_node(&logical_node)?;
+    identity.require_control_plane_or_logical_node(&logical_node)?;
     Ok(Json(
         state
             .store
@@ -260,7 +260,7 @@ async fn session_status(
     Extension(identity): Extension<CoordinationIdentity>,
     Json(request): Json<SessionTokenRequest>,
 ) -> Result<Json<crate::types::SessionRecord>> {
-    identity.node_scope()?;
+    identity.require_control_plane_or_node()?;
     Ok(Json(
         state
             .store
@@ -274,7 +274,7 @@ async fn heartbeat_session(
     Extension(identity): Extension<CoordinationIdentity>,
     Json(request): Json<SessionTokenRequest>,
 ) -> Result<Json<crate::types::SessionRecord>> {
-    identity.node_scope()?;
+    identity.require_control_plane_or_node()?;
     Ok(Json(
         state
             .store
@@ -321,7 +321,7 @@ async fn pause_session(
     Extension(identity): Extension<CoordinationIdentity>,
     Json(request): Json<SessionTokenRequest>,
 ) -> Result<Json<crate::types::SessionRecord>> {
-    identity.node_scope()?;
+    identity.require_control_plane_or_node()?;
     Ok(Json(
         state
             .store
