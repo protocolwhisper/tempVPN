@@ -47,6 +47,7 @@ pub struct Session {
 struct SessionRecord {
     session: Session,
     ip: Option<Ipv4Addr>,
+    peer_cleanup_pending: bool,
 }
 
 #[derive(Debug, Default)]
@@ -122,6 +123,7 @@ impl Sessions {
             SessionRecord {
                 session: session.clone(),
                 ip: None,
+                peer_cleanup_pending: false,
             },
         );
         info!(
@@ -174,6 +176,7 @@ impl Sessions {
                 };
 
                 record.session.client_public_key = Some(client_public_key.clone());
+                record.peer_cleanup_pending = false;
                 record.session.assigned_ip = Some(self.allocator.peer_cidr(ip));
                 record.session.connected_at = Some(now);
                 record.session.last_heartbeat_at = Some(now);
@@ -373,7 +376,7 @@ impl Sessions {
 
     pub async fn expire_sessions(&self) {
         let now = Utc::now();
-        let expired = {
+        let (expired, peer_cleanup) = {
             let mut store = self.store.lock().await;
             let stale_timeout_seconds = self.stale_timeout_seconds;
             let mut expired_ids = Vec::new();
@@ -396,6 +399,7 @@ impl Sessions {
                     record.session.state = SessionState::Paused;
                     record.session.connected_at = None;
                     record.session.last_heartbeat_at = None;
+                    record.peer_cleanup_pending = record.session.client_public_key.is_some();
                     stale_paused.push(id.clone());
                 }
                 if record.session.remaining_seconds == 0 || record.session.not_after <= now {
@@ -408,7 +412,7 @@ impl Sessions {
                 warn!(session_id = id, "pausing stale session");
             }
 
-            expired_ids
+            let expired = expired_ids
                 .into_iter()
                 .filter_map(|id| {
                     let record = store.sessions.remove(&id)?;
@@ -417,8 +421,41 @@ impl Sessions {
                     }
                     Some(record.session)
                 })
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            let peer_cleanup = store
+                .sessions
+                .iter()
+                .filter(|(_, record)| record.peer_cleanup_pending)
+                .filter_map(|(id, record)| {
+                    record
+                        .session
+                        .client_public_key
+                        .clone()
+                        .map(|public_key| (id.clone(), public_key))
+                })
+                .collect::<Vec<_>>();
+            (expired, peer_cleanup)
         };
+
+        for (session_id, public_key) in peer_cleanup {
+            match self.wireguard.remove_peer(&public_key).await {
+                Ok(()) => {
+                    let mut store = self.store.lock().await;
+                    if let Some(record) = store.sessions.get_mut(&session_id) {
+                        if record.session.client_public_key.as_deref() == Some(&public_key) {
+                            record.peer_cleanup_pending = false;
+                        }
+                    }
+                }
+                Err(err) => {
+                    error!(
+                        session_id,
+                        error = %err,
+                        "failed to remove stale paused peer; will retry"
+                    );
+                }
+            }
+        }
 
         for session in expired {
             warn!(session_id = session.session_id, "expiring session");
@@ -640,6 +677,44 @@ mod tests {
         assert!(paused.remaining_seconds > 0);
         assert!(paused.client_public_key.is_none());
         assert!(paused.connected_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn stale_auto_pause_removes_wireguard_peer() {
+        let mut config = test_config(3600);
+        config.stale_timeout_seconds = 0;
+        let sessions = Sessions::new(&config).unwrap();
+        let created = sessions.create(1800).await.unwrap();
+        sessions
+            .connect(&created.session_id, "client-public-key".to_string())
+            .await
+            .unwrap();
+        assert!(sessions.wireguard.mock_has_peer("client-public-key").await);
+
+        sessions.expire_sessions().await;
+
+        let paused = sessions.get(&created.session_id).await.unwrap();
+        assert_eq!(paused.state, SessionState::Paused);
+        assert!(!sessions.wireguard.mock_has_peer("client-public-key").await);
+    }
+
+    #[tokio::test]
+    async fn stale_auto_pause_retries_failed_wireguard_removal() {
+        let mut config = test_config(3600);
+        config.stale_timeout_seconds = 0;
+        let sessions = Sessions::new(&config).unwrap();
+        let created = sessions.create(1800).await.unwrap();
+        sessions
+            .connect(&created.session_id, "client-public-key".to_string())
+            .await
+            .unwrap();
+        sessions.wireguard.mock_fail_next_removals(1);
+
+        sessions.expire_sessions().await;
+        assert!(sessions.wireguard.mock_has_peer("client-public-key").await);
+
+        sessions.expire_sessions().await;
+        assert!(!sessions.wireguard.mock_has_peer("client-public-key").await);
     }
 
     #[tokio::test]

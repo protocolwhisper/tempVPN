@@ -1,0 +1,564 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "TempVPN API",
+    "version": "1.0.0",
+    "description": "Discover TempVPN nodes, purchase temporary WireGuard sessions with MPP, and manage their connected-time lifecycle."
+  },
+  "servers": [
+    {
+      "url": "https://registry.tempvpn.xyz",
+      "description": "Global node registry. Use the selected node's api_url for session operations."
+    }
+  ],
+  "tags": [
+    {
+      "name": "Discovery",
+      "description": "Find an available TempVPN node."
+    },
+    {
+      "name": "Fixed sessions",
+      "description": "Purchase and manage fixed-duration connected-time balances."
+    },
+    {
+      "name": "Streaming sessions",
+      "description": "Create a continuously metered Session v2 tunnel."
+    }
+  ],
+  "paths": {
+    "/nodes": {
+      "get": {
+        "operationId": "listNodes",
+        "summary": "List available VPN nodes",
+        "description": "Select one returned node and use its HTTPS api_url for every session request.",
+        "tags": ["Discovery"],
+        "parameters": [
+          {
+            "name": "country",
+            "in": "query",
+            "description": "ISO 3166-1 alpha-2 country code.",
+            "schema": { "type": "string", "minLength": 2, "maxLength": 2 }
+          },
+          {
+            "name": "city",
+            "in": "query",
+            "schema": { "type": "string", "minLength": 1 }
+          },
+          {
+            "name": "region",
+            "in": "query",
+            "schema": { "type": "string", "minLength": 1 }
+          },
+          {
+            "name": "available",
+            "in": "query",
+            "schema": { "type": "boolean" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Active nodes in deterministic node-ID order.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/Node" }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/sessions": {
+      "post": {
+        "operationId": "createFixedSession",
+        "summary": "Purchase a fixed-duration VPN session",
+        "description": "$0.01 per minute; duration must be a whole number of minutes. The first request receives an MPP 402 Challenge. After payment, the new session is paused with null client_public_key and assigned_ip. Call the connect operation with a locally generated WireGuard public key to activate routing.",
+        "tags": ["Fixed sessions"],
+        "servers": [
+          {
+            "url": "{api_url}",
+            "description": "Replace api_url with the exact HTTPS api_url from the selected /nodes record.",
+            "variables": {
+              "api_url": {
+                "default": "https://madrid.tempvpn.xyz",
+                "description": "Selected node's HTTPS API base URL."
+              }
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateSessionRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Paid session created in the paused state.",
+            "headers": {
+              "Payment-Receipt": {
+                "description": "MPP Receipt acknowledging payment.",
+                "schema": { "type": "string" }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Session" },
+                "examples": {
+                  "paused": { "$ref": "#/components/examples/PausedSession" }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "402": { "$ref": "#/components/responses/PaymentRequired" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/sessions/{session_id}/connect": {
+      "post": {
+        "operationId": "connectFixedSession",
+        "summary": "Attach a WireGuard key and activate a paid session",
+        "description": "Required after purchase. The client generates a WireGuard keypair locally and sends only its public key. A successful response contains the assigned tunnel address and node connection parameters.",
+        "tags": ["Fixed sessions"],
+        "security": [],
+        "servers": [
+          {
+            "url": "{api_url}",
+            "description": "Use the same selected node api_url that created the session.",
+            "variables": {
+              "api_url": {
+                "default": "https://madrid.tempvpn.xyz",
+                "description": "Selected node's HTTPS API base URL."
+              }
+            }
+          }
+        ],
+        "parameters": [
+          { "$ref": "#/components/parameters/SessionId" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ConnectSessionRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Session activated with connection parameters.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Session" },
+                "examples": {
+                  "active": { "$ref": "#/components/examples/ActiveSession" }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/TransitionInProgress" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/sessions/{session_id}/pause": {
+      "post": {
+        "operationId": "pauseFixedSession",
+        "summary": "Pause a session and preserve unused balance",
+        "description": "Stops connected-time consumption and removes the WireGuard peer. This operation has no request body, is safe to repeat, and does not delete the paid session.",
+        "tags": ["Fixed sessions"],
+        "security": [],
+        "servers": [
+          {
+            "url": "{api_url}",
+            "description": "Use the same selected node api_url that owns the session.",
+            "variables": {
+              "api_url": {
+                "default": "https://madrid.tempvpn.xyz",
+                "description": "Selected node's HTTPS API base URL."
+              }
+            }
+          }
+        ],
+        "parameters": [
+          { "$ref": "#/components/parameters/SessionId" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Session paused; remaining_seconds is preserved.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Session" },
+                "examples": {
+                  "paused": { "$ref": "#/components/examples/PausedSession" }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/TransitionInProgress" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/sessions/{session_id}/heartbeat": {
+      "post": {
+        "operationId": "heartbeatFixedSession",
+        "summary": "Refresh an active session",
+        "tags": ["Fixed sessions"],
+        "security": [],
+        "servers": [
+          {
+            "url": "{api_url}",
+            "variables": {
+              "api_url": {
+                "default": "https://madrid.tempvpn.xyz",
+                "description": "Selected node's HTTPS API base URL."
+              }
+            }
+          }
+        ],
+        "parameters": [
+          { "$ref": "#/components/parameters/SessionId" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Refreshed session state.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Session" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/sessions/{session_id}/status": {
+      "get": {
+        "operationId": "getFixedSessionStatus",
+        "summary": "Get remaining balance and lifecycle state",
+        "tags": ["Fixed sessions"],
+        "security": [],
+        "servers": [
+          {
+            "url": "{api_url}",
+            "variables": {
+              "api_url": {
+                "default": "https://madrid.tempvpn.xyz",
+                "description": "Selected node's HTTPS API base URL."
+              }
+            }
+          }
+        ],
+        "parameters": [
+          { "$ref": "#/components/parameters/SessionId" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current session state.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Session" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/sessions/stream": {
+      "post": {
+        "operationId": "createStreamingSession",
+        "summary": "Create or resume a metered VPN stream",
+        "description": "Returns an MPP Session v2 Challenge when unpaid and an SSE control stream after valid funding.",
+        "tags": ["Streaming sessions"],
+        "servers": [
+          {
+            "url": "{api_url}",
+            "variables": {
+              "api_url": {
+                "default": "https://madrid.tempvpn.xyz",
+                "description": "Selected node's HTTPS API base URL."
+              }
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/StreamSessionRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authenticated SSE session control stream.",
+            "content": {
+              "text/event-stream": {
+                "schema": { "type": "string" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "402": { "$ref": "#/components/responses/PaymentRequired" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "SessionId": {
+        "name": "session_id",
+        "in": "path",
+        "required": true,
+        "description": "The sess_-prefixed identifier returned by POST /sessions.",
+        "schema": {
+          "type": "string",
+          "pattern": "^sess_[A-Za-z0-9]+$"
+        }
+      }
+    },
+    "schemas": {
+      "ConnectSessionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["client_public_key"],
+        "properties": {
+          "client_public_key": {
+            "type": "string",
+            "minLength": 44,
+            "maxLength": 44,
+            "pattern": "^[A-Za-z0-9+/]{43}=$",
+            "description": "Canonical base64-encoded 32-byte WireGuard public key. Generate the matching private key locally and never send it.",
+            "examples": ["BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="]
+          }
+        }
+      },
+      "CreateSessionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["duration_seconds"],
+        "properties": {
+          "duration_seconds": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 60,
+            "multipleOf": 60,
+            "description": "$0.01 per minute; duration must be a whole number of minutes. Subject to the selected node's maximum.",
+            "examples": [300]
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": { "type": "string" },
+          "phase": { "type": ["string", "null"] },
+          "retryable": { "type": "boolean" }
+        }
+      },
+      "Node": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "region",
+          "api_url",
+          "wireguard_endpoint",
+          "expected_exit_ip",
+          "lease_expires_at"
+        ],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "region": { "type": "string" },
+          "country_code": { "type": "string", "minLength": 2, "maxLength": 2 },
+          "subdivision_code": { "type": "string" },
+          "city": { "type": "string" },
+          "accepting_sessions": { "type": "boolean" },
+          "available_slots": { "type": "integer", "minimum": 0 },
+          "api_url": {
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https://",
+            "description": "HTTPS base URL for every paid and lifecycle request to this node."
+          },
+          "wireguard_endpoint": { "type": "string" },
+          "expected_exit_ip": { "type": "string" },
+          "lease_expires_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Session": {
+        "type": "object",
+        "required": [
+          "session_id",
+          "node_url",
+          "client_public_key",
+          "assigned_ip",
+          "server_public_key",
+          "endpoint",
+          "expected_exit_ip",
+          "created_at",
+          "connected_at",
+          "last_heartbeat_at",
+          "not_after",
+          "total_seconds",
+          "remaining_seconds",
+          "state"
+        ],
+        "properties": {
+          "session_id": { "type": "string", "pattern": "^sess_[A-Za-z0-9]+$" },
+          "node_url": { "type": "string", "format": "uri", "pattern": "^https://" },
+          "client_public_key": {
+            "type": ["string", "null"],
+            "description": "Null after purchase or pause; populated with the caller's public key while active."
+          },
+          "assigned_ip": {
+            "type": ["string", "null"],
+            "description": "Null after purchase or pause; populated with the client tunnel CIDR while active."
+          },
+          "server_public_key": { "type": "string" },
+          "endpoint": { "type": "string" },
+          "expected_exit_ip": { "type": "string" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "connected_at": { "type": ["string", "null"], "format": "date-time" },
+          "last_heartbeat_at": { "type": ["string", "null"], "format": "date-time" },
+          "not_after": { "type": "string", "format": "date-time" },
+          "total_seconds": { "type": "integer", "format": "uint64", "minimum": 1 },
+          "remaining_seconds": { "type": "integer", "format": "uint64", "minimum": 0 },
+          "state": { "type": "string", "enum": ["paused", "active", "expired"] }
+        }
+      },
+      "StreamSessionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["client_public_key", "duration_seconds"],
+        "properties": {
+          "client_public_key": {
+            "type": "string",
+            "minLength": 44,
+            "maxLength": 44,
+            "pattern": "^[A-Za-z0-9+/]{43}=$",
+            "description": "Canonical base64-encoded 32-byte WireGuard public key."
+          },
+          "duration_seconds": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 1
+          }
+        }
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "Invalid request.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Session not found.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      },
+      "PaymentRequired": {
+        "description": "MPP payment is required or the supplied Credential was rejected.",
+        "headers": {
+          "WWW-Authenticate": {
+            "required": true,
+            "description": "MPP Challenge. Return its id and opaque fields unchanged in the Credential.",
+            "schema": { "type": "string" }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      },
+      "ServiceUnavailable": {
+        "description": "A required registry, coordinator, or node dependency is unavailable.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      },
+      "TransitionInProgress": {
+        "description": "The peer transition is still reconciling; retry after the indicated delay.",
+        "headers": {
+          "Retry-After": {
+            "description": "Seconds to wait before retrying.",
+            "schema": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      }
+    },
+    "examples": {
+      "ActiveSession": {
+        "value": {
+          "session_id": "sess_0123456789abcdef0123456789abcdef",
+          "node_url": "https://madrid.tempvpn.xyz",
+          "client_public_key": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
+          "assigned_ip": "10.8.0.2/32",
+          "server_public_key": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg=",
+          "endpoint": "madrid.tempvpn.xyz:51820",
+          "expected_exit_ip": "34.0.195.239",
+          "created_at": "2026-08-25T10:00:00Z",
+          "connected_at": "2026-08-25T10:00:05Z",
+          "last_heartbeat_at": "2026-08-25T10:00:05Z",
+          "not_after": "2026-09-01T10:00:00Z",
+          "total_seconds": 300,
+          "remaining_seconds": 300,
+          "state": "active"
+        }
+      },
+      "PausedSession": {
+        "value": {
+          "session_id": "sess_0123456789abcdef0123456789abcdef",
+          "node_url": "https://madrid.tempvpn.xyz",
+          "client_public_key": null,
+          "assigned_ip": null,
+          "server_public_key": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg=",
+          "endpoint": "madrid.tempvpn.xyz:51820",
+          "expected_exit_ip": "34.0.195.239",
+          "created_at": "2026-08-25T10:00:00Z",
+          "connected_at": null,
+          "last_heartbeat_at": null,
+          "not_after": "2026-09-01T10:00:00Z",
+          "total_seconds": 300,
+          "remaining_seconds": 300,
+          "state": "paused"
+        }
+      }
+    }
+  }
+}

@@ -323,6 +323,13 @@ impl Config {
             }
         };
         let streaming = load_streaming_config(&streaming_file, &mpp_payment_recipient)?;
+        validate_production_payment_identity(
+            &streaming,
+            &mpp_rpc_url,
+            &mpp_realm,
+            &mpp_payment_currency,
+            &mpp_payment_recipient,
+        )?;
 
         Ok(Self {
             bind_addr,
@@ -538,6 +545,83 @@ fn validate_streaming_config(config: &StreamingConfig) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn validate_production_payment_identity(
+    streaming: &StreamingConfig,
+    rpc_url: &str,
+    realm: &str,
+    currency: &str,
+    recipient: &str,
+) -> Result<()> {
+    if !streaming.enabled || streaming.mode != StreamingMode::Production {
+        return Ok(());
+    }
+    if streaming.chain_id != 4217
+        || rpc_url == DEFAULT_MPP_RPC_URL
+        || rpc_url.to_ascii_lowercase().contains("moderato")
+        || realm == DEFAULT_MPP_REALM
+        || currency.eq_ignore_ascii_case(DEFAULT_MPP_PAYMENT_CURRENCY)
+        || recipient.eq_ignore_ascii_case(DEFAULT_MPP_PAYMENT_RECIPIENT)
+    {
+        return Err(Error::InvalidConfig(
+            "production streaming requires explicit Tempo mainnet RPC, chain, realm, currency, and recipient settings".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod production_payment_tests {
+    use super::*;
+
+    fn production_streaming() -> StreamingConfig {
+        StreamingConfig {
+            enabled: true,
+            mode: StreamingMode::Production,
+            chain_id: 4217,
+            reserve: "0x4d50500000000000000000000000000000000000"
+                .parse()
+                .unwrap(),
+            operator: "0x0000000000000000000000000000000000000001"
+                .parse()
+                .unwrap(),
+            unit_amount: 10_000,
+            billing_interval_seconds: 60,
+            suggested_reserve: 100_000,
+            min_voucher_delta: 10_000,
+            grace_period_seconds: 30,
+            close_signer: None,
+            store: ChannelStoreConfig::Sqlite("/tmp/session.sqlite".into()),
+        }
+    }
+
+    #[test]
+    fn production_rejects_development_payment_identity() {
+        let config = production_streaming();
+        let error = validate_production_payment_identity(
+            &config,
+            DEFAULT_MPP_RPC_URL,
+            DEFAULT_MPP_REALM,
+            DEFAULT_MPP_PAYMENT_CURRENCY,
+            DEFAULT_MPP_PAYMENT_RECIPIENT,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("explicit Tempo mainnet"));
+    }
+
+    #[test]
+    fn production_accepts_explicit_mainnet_payment_identity() {
+        let config = production_streaming();
+        validate_production_payment_identity(
+            &config,
+            "https://rpc.tempo.xyz",
+            "tempvpn.xyz",
+            "0x20c000000000000000000000b9537d11c60e8b50",
+            "0x59E5aa2A081FB9F56FE9ae57b7688A5884d74dDC",
+        )
+        .unwrap();
+    }
 }
 
 fn env_var(name: &'static str) -> Option<String> {

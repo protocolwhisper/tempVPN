@@ -1,9 +1,6 @@
 use std::str::FromStr;
 
-use alloy::{
-    primitives::{Address, B256},
-    signers::Signature,
-};
+use alloy::primitives::{Address, B256};
 use mpp::protocol::{
     methods::tempo::{
         compute_precompile_channel_id_with_escrow, precompile_voucher_signing_hash_with_escrow,
@@ -11,6 +8,7 @@ use mpp::protocol::{
     },
     traits::VerificationError,
 };
+use tempo_primitives::transaction::PrimitiveSignature;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ParsedDescriptor {
@@ -128,11 +126,6 @@ pub fn verify_voucher_signature(
     signature_bytes: &[u8],
     expected_signer: Address,
 ) -> Result<(), VerificationError> {
-    if signature_bytes.len() != 65 {
-        return Err(VerificationError::invalid_signature(
-            "TIP-1034 vouchers require a 65-byte ECDSA signature",
-        ));
-    }
     let hash = precompile_voucher_signing_hash_with_escrow(
         channel_id,
         cumulative_amount,
@@ -140,11 +133,13 @@ pub fn verify_voucher_signature(
         chain_id,
     )
     .map_err(|error| VerificationError::invalid_payload(error.to_string()))?;
-    let signature = Signature::try_from(signature_bytes).map_err(|_| {
-        VerificationError::invalid_signature("voucher signature could not be decoded")
+    let signature = PrimitiveSignature::from_bytes(signature_bytes).map_err(|error| {
+        VerificationError::invalid_signature(format!(
+            "voucher is not a supported TIP-1020 primitive signature: {error}"
+        ))
     })?;
     let recovered = signature
-        .recover_address_from_prehash(&hash)
+        .recover_signer(&hash)
         .map_err(|_| VerificationError::invalid_signature("voucher signer recovery failed"))?;
     if recovered != expected_signer {
         return Err(VerificationError::invalid_signature(
@@ -168,8 +163,22 @@ pub fn parse_b256(field: &str, value: &str) -> Result<B256, VerificationError> {
 
 #[cfg(test)]
 mod tests {
-    use alloy::{primitives::Bytes, signers::local::PrivateKeySigner};
+    use alloy::{
+        primitives::{Bytes, U256},
+        signers::local::PrivateKeySigner,
+    };
     use mpp::protocol::methods::tempo::sign_precompile_voucher_with_escrow;
+    use p256::{
+        ecdsa::{signature::hazmat::PrehashSigner, SigningKey as P256SigningKey},
+        elliptic_curve::rand_core::OsRng,
+    };
+    use tempo_primitives::{
+        derive_p256_address,
+        transaction::{
+            tt_signature::{normalize_p256_s, P256SignatureWithPreHash, P256_ORDER},
+            PrimitiveSignature,
+        },
+    };
 
     use super::*;
 
@@ -263,5 +272,108 @@ mod tests {
             Address::repeat_byte(0x12),
         )
         .is_err());
+    }
+
+    fn p256_voucher(
+        reserve: Address,
+        chain_id: u64,
+        channel_id: B256,
+        cumulative_amount: u128,
+    ) -> (Vec<u8>, Address, P256SignatureWithPreHash) {
+        let signing_key = P256SigningKey::random(&mut OsRng);
+        let encoded_point = signing_key.verifying_key().to_encoded_point(false);
+        let pub_key_x = B256::from_slice(encoded_point.x().expect("P256 x coordinate"));
+        let pub_key_y = B256::from_slice(encoded_point.y().expect("P256 y coordinate"));
+        let hash = precompile_voucher_signing_hash_with_escrow(
+            channel_id,
+            cumulative_amount,
+            reserve,
+            chain_id,
+        )
+        .expect("voucher hash");
+        let signature: p256::ecdsa::Signature = signing_key
+            .sign_prehash(hash.as_slice())
+            .expect("P256 voucher signature");
+        let signature_bytes = signature.to_bytes();
+        let primitive = P256SignatureWithPreHash {
+            r: B256::from_slice(&signature_bytes[..32]),
+            s: normalize_p256_s(&signature_bytes[32..])
+                .expect("P256 signer produced an in-range s value"),
+            pub_key_x,
+            pub_key_y,
+            pre_hash: false,
+        };
+        let encoded = PrimitiveSignature::P256(primitive).to_bytes().to_vec();
+        (
+            encoded,
+            derive_p256_address(&pub_key_x, &pub_key_y),
+            primitive,
+        )
+    }
+
+    #[test]
+    fn standard_wallet_p256_voucher_is_accepted() {
+        let reserve: Address = RESERVE.parse().unwrap();
+        let channel_id = B256::repeat_byte(0xcd);
+        let (signature, signer, _) = p256_voucher(reserve, 42_431, channel_id, 1_000);
+
+        verify_voucher_signature(reserve, 42_431, channel_id, 1_000, &signature, signer).unwrap();
+    }
+
+    #[test]
+    fn p256_voucher_rejects_signer_mismatch_and_high_s() {
+        let reserve: Address = RESERVE.parse().unwrap();
+        let channel_id = B256::repeat_byte(0xce);
+        let (signature, signer, primitive) = p256_voucher(reserve, 42_431, channel_id, 2_000);
+
+        assert!(verify_voucher_signature(
+            reserve,
+            42_431,
+            channel_id,
+            2_000,
+            &signature,
+            Address::repeat_byte(0x99),
+        )
+        .is_err());
+
+        let low_s = U256::from_be_slice(primitive.s.as_slice());
+        let high_s = B256::from((P256_ORDER - low_s).to_be_bytes::<32>());
+        let high_s_signature = PrimitiveSignature::P256(P256SignatureWithPreHash {
+            s: high_s,
+            ..primitive
+        })
+        .to_bytes();
+        assert!(verify_voucher_signature(
+            reserve,
+            42_431,
+            channel_id,
+            2_000,
+            &high_s_signature,
+            signer,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn unsupported_voucher_encodings_are_rejected() {
+        let reserve: Address = RESERVE.parse().unwrap();
+        let channel_id = B256::repeat_byte(0xcf);
+
+        for signature in [
+            vec![0x01, 0x02],
+            vec![0xff; 130],
+            vec![0x03; 86],
+            vec![0x04; 86],
+        ] {
+            assert!(verify_voucher_signature(
+                reserve,
+                42_431,
+                channel_id,
+                3_000,
+                &signature,
+                Address::repeat_byte(0x11),
+            )
+            .is_err());
+        }
     }
 }

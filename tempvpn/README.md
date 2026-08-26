@@ -63,7 +63,7 @@ The Linux server component. It exposes:
 | `POST /sessions/:id/pause` | Pauses a paid balance, removes the WireGuard peer, and stops consuming time. |
 | `POST /sessions/:id/heartbeat` | Updates connected-time accounting for active sessions. |
 | `GET /sessions/:id/status` | Public paid-session status lookup for remaining seconds and grace deadline. |
-| `GET /sessions/stream` | Tempo TIP-1034 Session v2 authenticated SSE control stream for metered access. |
+| `POST /sessions/stream` | Creates or resumes a Tempo TIP-1034 Session v2 authenticated SSE control stream for metered access. |
 | `HEAD /sessions/stream` | Session v2 open, voucher, top-up, and close management operations. |
 | `GET /sessions/:id` | Administrative session lookup; not used by the skill. |
 | `DELETE /sessions/:id` | Administrative removal; prohibited in the normal paid client flow. |
@@ -195,13 +195,23 @@ VPN_NODE_MPP_SESSION_CLOSE_PRIVATE_KEY="0x..." \
   cargo run -p vpn-node-daemon -- --config vpn-node.toml
 ```
 
-An unpaid `GET` or `HEAD` request receives a 402 challenge containing method
-`tempo`, intent `session`, and `sessionProtocol: "v2"`. The request's WireGuard
-public key and safety duration are HMAC-bound into the challenge. After a valid
-funded credential, `GET` returns connection details over SSE. Each completed
+An unpaid `POST` or `HEAD` request receives a 402 challenge containing method
+`tempo`, intent `session`, and `sessionProtocol: "v2"`. `POST` accepts
+`client_public_key` and `duration_seconds` in a JSON body; the public key must be
+a canonical base64-encoded 32-byte WireGuard public key. The request's public
+key and safety duration are HMAC-bound into the challenge. Invalid inputs are
+rejected before a payment challenge is issued. After a valid funded credential,
+`POST` returns connection details over SSE. `GET /sessions/stream` is not a
+payable operation and returns 405; `HEAD` is reserved for authenticated Session
+v2 management. Each completed
 billing interval consumes one atomic unit; exhaustion disables the peer and
 emits `payment-need-voucher`, and a newer verified voucher resumes the same
 logical session without billing the paused period.
+
+Deployment follow-up: the external node registry entry, OpenAPI document, and
+`llms.txt` are maintained outside this checkout. They must all advertise
+`POST /sessions/stream`, include a valid WireGuard public-key request example,
+and be reindexed after the compatible node binary is deployed.
 
 Production mode fails at startup unless `mpp_session_store = "sqlite"` and
 `mpp_session_sqlite_path` is configured. Put the database on durable storage

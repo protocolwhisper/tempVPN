@@ -1,0 +1,16 @@
+.git
+**/.terraform/**
+**/target/**
+mpptempos/**
+infra/**
+openspec/**
+.codex/**
+agents/**
+clients/macos/**
+**/.build/**
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+tempvpn-node-records.txt
+tempvpn-node-records.zone

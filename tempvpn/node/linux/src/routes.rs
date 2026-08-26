@@ -6,11 +6,17 @@ use std::sync::{
 use axum::{
     body::Body,
     extract::{Path, Query, State},
-    http::{header::WWW_AUTHENTICATE, HeaderMap, HeaderValue, StatusCode},
+    http::{
+        header::{ALLOW, CONTENT_TYPE, WWW_AUTHENTICATE},
+        HeaderMap, HeaderValue, StatusCode,
+    },
     response::{IntoResponse, Response},
     routing::{get, post, put},
     Json, Router,
 };
+
+const OPENAPI_DOCUMENT: &str = include_str!("../../../registry/aggregator/openapi.json");
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use mpp::{
     protocol::{
         core::{extract_payment_scheme, Base64UrlJson, PaymentChallenge, PaymentCredential},
@@ -83,7 +89,7 @@ pub struct ConnectSessionRequest {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct StreamSessionQuery {
+pub struct StreamSessionRequest {
     pub client_public_key: String,
     pub duration_seconds: u64,
 }
@@ -105,9 +111,12 @@ struct NodesQuery {
 }
 
 pub fn router(state: AppState) -> Router {
-    let streaming_enabled = state.streaming.is_some();
     let coordinated_sessions = state.coordinator.is_some();
     let mut router = Router::new()
+        .route("/", get(service_root))
+        .route("/docs", get(service_docs))
+        .route("/llms.txt", get(llms_txt))
+        .route("/openapi.json", get(openapi))
         .route("/health", get(health))
         .route("/nodes", get(nodes))
         .route(
@@ -127,13 +136,60 @@ pub fn router(state: AppState) -> Router {
     } else {
         router.route("/sessions", post(create_local_session))
     };
-    if streaming_enabled {
-        router = router.route(
-            "/sessions/stream",
-            get(stream_session).head(manage_stream_session),
-        );
-    }
+    router = router.route(
+        "/sessions/stream",
+        post(stream_session)
+            .head(manage_stream_session)
+            .get(reject_stream_session_get),
+    );
     router.with_state(state)
+}
+
+async fn service_root(State(state): State<AppState>) -> Json<serde_json::Value> {
+    Json(json!({
+        "service": "TempVPN",
+        "node": state.config.node_id,
+        "docs": "/docs",
+        "openapi": "/openapi.json",
+        "llms": "/llms.txt"
+    }))
+}
+
+async fn service_docs(State(state): State<AppState>) -> Response {
+    let base = state.config.public_api_url.trim_end_matches('/');
+    let document = format!(
+        "# TempVPN\n\nTempVPN sells temporary WireGuard VPN access through Tempo MPP on mainnet.\n\n## Agent workflow\n\n1. Discover a node with `GET https://registry.tempvpn.xyz/nodes?available=true`.\n2. Use the selected node's `api_url` for payment and session operations.\n3. Buy fixed access with `POST /sessions` and `{{\"duration_seconds\": 1800}}`, then attach a local WireGuard public key with `POST /sessions/{{session_id}}/connect`.\n4. Stream usage with `POST /sessions/stream` and `{{\"client_public_key\": \"<wireguard-public-key>\", \"duration_seconds\": 1800}}`.\n5. Pause unused fixed access with `POST /sessions/{{session_id}}/pause`.\n\nPricing is $0.01 per minute; duration must be a whole number of minutes. Treat the runtime HTTP 402 challenge as authoritative.\n\nNode API: {base}\nMachine-readable API: {base}/openapi.json\n"
+    );
+    ([(CONTENT_TYPE, "text/plain; charset=utf-8")], document).into_response()
+}
+
+async fn llms_txt(State(state): State<AppState>) -> Response {
+    let base = state.config.public_api_url.trim_end_matches('/');
+    let document = format!(
+        "# TempVPN\n\n> Buy temporary WireGuard VPN access with Tempo MPP.\n\nService: {base}\nOpenAPI: {base}/openapi.json\nDocs: {base}/docs\n\nDiscover nodes: GET https://registry.tempvpn.xyz/nodes?available=true\nUse the selected node's api_url for all paid and lifecycle requests.\nFixed purchase: POST <api_url>/sessions JSON {{\"duration_seconds\": 1800}}\nConnect fixed session: POST <api_url>/sessions/<session_id>/connect JSON {{\"client_public_key\": \"<wireguard-public-key>\"}}\nPause fixed session: POST <api_url>/sessions/<session_id>/pause\nStreaming: POST <api_url>/sessions/stream JSON {{\"client_public_key\": \"<wireguard-public-key>\", \"duration_seconds\": 1800}}\nPrice: $0.01 per minute; duration must be a whole number of minutes.\nPayment: Tempo mainnet MPP; follow the runtime 402 challenge.\nNever send a wallet private key or WireGuard private key to TempVPN.\n"
+    );
+    ([(CONTENT_TYPE, "text/plain; charset=utf-8")], document).into_response()
+}
+
+async fn openapi() -> Response {
+    let mut response = OPENAPI_DOCUMENT.into_response();
+    response.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("application/json; charset=utf-8"),
+    );
+    response
+}
+
+async fn reject_stream_session_get() -> Response {
+    let mut response = (
+        StatusCode::METHOD_NOT_ALLOWED,
+        Json(json!({ "error": "use POST /sessions/stream to create a streaming session" })),
+    )
+        .into_response();
+    response
+        .headers_mut()
+        .insert(ALLOW, HeaderValue::from_static("POST, HEAD"));
+    response
 }
 
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
@@ -586,8 +642,8 @@ async fn session_status(State(state): State<AppState>, Path(session_id): Path<St
 
 async fn stream_session(
     State(state): State<AppState>,
-    Query(query): Query<StreamSessionQuery>,
     headers: HeaderMap,
+    Json(query): Json<StreamSessionRequest>,
 ) -> Response {
     let (streaming, scoped) = match scoped_streaming(&state, &query) {
         Ok(value) => value,
@@ -659,7 +715,7 @@ async fn stream_session(
 
 async fn manage_stream_session(
     State(state): State<AppState>,
-    Query(query): Query<StreamSessionQuery>,
+    Query(query): Query<StreamSessionRequest>,
     headers: HeaderMap,
 ) -> Response {
     let (_streaming, scoped) = match scoped_streaming(&state, &query) {
@@ -684,12 +740,14 @@ async fn manage_stream_session(
 #[allow(clippy::result_large_err)]
 fn scoped_streaming(
     state: &AppState,
-    query: &StreamSessionQuery,
+    query: &StreamSessionRequest,
 ) -> Result<(Arc<StreamingPayments>, crate::session_v2::StreamingMpp), Response> {
-    if query.client_public_key.trim().is_empty() {
+    if !is_canonical_wireguard_public_key(&query.client_public_key) {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "client_public_key is required" })),
+            Json(json!({
+                "error": "client_public_key must be a canonical base64-encoded 32-byte WireGuard public key"
+            })),
         )
             .into_response());
     }
@@ -725,6 +783,13 @@ fn scoped_streaming(
     })?;
     let scoped = streaming.mpp.clone().with_opaque(opaque);
     Ok((streaming, scoped))
+}
+
+fn is_canonical_wireguard_public_key(value: &str) -> bool {
+    STANDARD
+        .decode(value)
+        .map(|decoded| decoded.len() == 32 && STANDARD.encode(decoded) == value)
+        .unwrap_or(false)
 }
 
 fn payment_credential(headers: &HeaderMap) -> Result<Option<PaymentCredential>, String> {
@@ -767,7 +832,7 @@ fn session_challenge(
 
 fn payment_required(
     state: &AppState,
-    _query: &StreamSessionQuery,
+    _query: &StreamSessionRequest,
     scoped: &crate::session_v2::StreamingMpp,
     error: Option<String>,
 ) -> Response {
@@ -980,6 +1045,8 @@ mod tests {
         },
     };
 
+    const TEST_CLIENT_PUBLIC_KEY: &str = "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=";
+
     #[derive(Default)]
     struct RouteChain {
         state: Mutex<Option<ReserveState>>,
@@ -1133,8 +1200,12 @@ mod tests {
         let response = router(state().await)
             .oneshot(
                 Request::builder()
-                    .uri("/sessions/stream?client_public_key=client-key&duration_seconds=300")
-                    .body(Body::empty())
+                    .method(Method::POST)
+                    .uri("/sessions/stream")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"client_public_key":"{TEST_CLIENT_PUBLIC_KEY}","duration_seconds":300}}"#
+                    )))
                     .unwrap(),
             )
             .await
@@ -1153,15 +1224,129 @@ mod tests {
         assert_eq!(request.method_details.unwrap()["sessionProtocol"], "v2");
         assert_eq!(request.suggested_deposit.as_deref(), Some("10000"));
         let opaque: serde_json::Value = challenge.opaque.unwrap().decode().unwrap();
-        assert_eq!(opaque["clientPublicKey"], "client-key");
+        assert_eq!(opaque["clientPublicKey"], TEST_CLIENT_PUBLIC_KEY);
         assert_eq!(opaque["durationSeconds"], "300");
+    }
+
+    #[tokio::test]
+    async fn get_stream_route_is_non_payable_method_not_allowed() {
+        let response = router(state().await)
+            .oneshot(
+                Request::builder()
+                    .uri("/sessions/stream")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(response.headers().get(ALLOW).unwrap(), "POST, HEAD");
+        assert!(!response.headers().contains_key(WWW_AUTHENTICATE));
+    }
+
+    #[tokio::test]
+    async fn invalid_stream_public_key_is_rejected_before_payment() {
+        let response = router(state().await)
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/sessions/stream")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"client_public_key":"mppscan-discovery-probe","duration_seconds":300}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(!response.headers().contains_key(WWW_AUTHENTICATE));
+    }
+
+    #[tokio::test]
+    async fn invalid_stream_duration_is_rejected_before_payment() {
+        let response = router(state().await)
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/sessions/stream")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"client_public_key":"{TEST_CLIENT_PUBLIC_KEY}","duration_seconds":0}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(!response.headers().contains_key(WWW_AUTHENTICATE));
+    }
+
+    #[tokio::test]
+    async fn malformed_or_missing_stream_json_never_requests_payment() {
+        for body in [Body::from("{"), Body::empty()] {
+            let response = router(state().await)
+                .oneshot(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri("/sessions/stream")
+                        .header(axum::http::header::CONTENT_TYPE, "application/json")
+                        .body(body)
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert!(!response.headers().contains_key(WWW_AUTHENTICATE));
+        }
+    }
+
+    #[tokio::test]
+    async fn disabled_stream_route_is_reserved_and_non_payable() {
+        let mut disabled = state().await;
+        disabled.streaming = None;
+
+        let post_response = router(disabled.clone())
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/sessions/stream")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"client_public_key":"{TEST_CLIENT_PUBLIC_KEY}","duration_seconds":300}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(post_response.status(), StatusCode::NOT_FOUND);
+        assert!(!post_response.headers().contains_key(WWW_AUTHENTICATE));
+
+        let head_response = router(disabled)
+            .oneshot(
+                Request::builder()
+                    .method(Method::HEAD)
+                    .uri(format!(
+                        "/sessions/stream?client_public_key={TEST_CLIENT_PUBLIC_KEY}&duration_seconds=300"
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(head_response.status(), StatusCode::NOT_FOUND);
+        assert!(!head_response.headers().contains_key(WWW_AUTHENTICATE));
     }
 
     #[tokio::test]
     async fn head_open_is_a_management_action_and_does_not_create_a_peer() {
         let state = state().await;
-        let query = StreamSessionQuery {
-            client_public_key: "client-key".into(),
+        let query = StreamSessionRequest {
+            client_public_key: TEST_CLIENT_PUBLIC_KEY.into(),
             duration_seconds: 300,
         };
         let (_, scoped) = scoped_streaming(&state, &query).ok().unwrap();
@@ -1216,7 +1401,9 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::HEAD)
-                    .uri("/sessions/stream?client_public_key=client-key&duration_seconds=300")
+                    .uri(format!(
+                        "/sessions/stream?client_public_key={TEST_CLIENT_PUBLIC_KEY}&duration_seconds=300"
+                    ))
                     .header(
                         axum::http::header::AUTHORIZATION,
                         format_authorization(&credential).unwrap(),
@@ -1237,9 +1424,13 @@ mod tests {
         let response = router(state.clone())
             .oneshot(
                 Request::builder()
-                    .uri("/sessions/stream?client_public_key=client-key&duration_seconds=300")
+                    .method(Method::POST)
+                    .uri("/sessions/stream")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
                     .header(axum::http::header::AUTHORIZATION, "Payment invalid")
-                    .body(Body::empty())
+                    .body(Body::from(format!(
+                        r#"{{"client_public_key":"{TEST_CLIENT_PUBLIC_KEY}","duration_seconds":300}}"#
+                    )))
                     .unwrap(),
             )
             .await
