@@ -81,15 +81,26 @@ identity_field() {
 entitlements_file() {
   local product=$1 output=$2
   codesign -d --entitlements - "$product" >"$output" 2>/dev/null
-  plutil -lint "$output" >/dev/null
+  grep -F "[Dict]" "$output" >/dev/null || {
+    echo "Could not read DER entitlements for $product." >&2
+    exit 1
+  }
+}
+
+entitlement_has_value() {
+  local report=$1 key=$2 expected=$3
+  awk -v key="$key" -v expected="$expected" '
+    $0 == "\t[Key] " key { within_key = 1; next }
+    within_key && $0 ~ /^\t\[Key\] / { exit }
+    within_key && index($0, expected) { found = 1 }
+    END { exit !found }
+  ' "$report"
 }
 
 require_entitlement_value() {
-  local plist=$1 path=$2 expected=$3
-  local actual
-  actual=$(plutil -extract "$path" raw -o - "$plist" 2>/dev/null || true)
-  [[ "$actual" == "$expected" ]] || {
-    echo "Missing or incorrect entitlement $path (expected $expected)." >&2
+  local report=$1 key=$2 expected=$3
+  entitlement_has_value "$report" "$key" "$expected" || {
+    echo "Missing or incorrect entitlement $key (expected $expected)." >&2
     exit 1
   }
 }
@@ -129,14 +140,14 @@ entitlements_file "$app" "$app_entitlements"
 entitlements_file "$extension" "$extension_entitlements"
 entitlements_file "$cli" "$cli_entitlements"
 
-require_entitlement_value "$app_entitlements" "com.apple.developer.networking.networkextension.0" "packet-tunnel-provider-systemextension"
-require_entitlement_value "$extension_entitlements" "com.apple.developer.networking.networkextension.0" "packet-tunnel-provider-systemextension"
-require_entitlement_value "$app_entitlements" "keychain-access-groups.0" "$expected_keychain_group"
-require_entitlement_value "$extension_entitlements" "keychain-access-groups.0" "$expected_keychain_group"
-require_entitlement_value "$cli_entitlements" "keychain-access-groups.0" "$expected_keychain_group"
+require_entitlement_value "$app_entitlements" "com.apple.developer.networking.networkextension" "packet-tunnel-provider-systemextension"
+require_entitlement_value "$extension_entitlements" "com.apple.developer.networking.networkextension" "packet-tunnel-provider-systemextension"
+require_entitlement_value "$app_entitlements" "keychain-access-groups" "$expected_keychain_group"
+require_entitlement_value "$extension_entitlements" "keychain-access-groups" "$expected_keychain_group"
+require_entitlement_value "$cli_entitlements" "keychain-access-groups" "$expected_keychain_group"
 
 for plist in "$app_entitlements" "$extension_entitlements" "$cli_entitlements"; do
-  if [[ "$(plutil -extract com.apple.security.get-task-allow raw -o - "$plist" 2>/dev/null || true)" == "true" ]]; then
+  if entitlement_has_value "$plist" "com.apple.security.get-task-allow" "true"; then
     echo "Development-only get-task-allow entitlement is present." >&2
     exit 1
   fi
