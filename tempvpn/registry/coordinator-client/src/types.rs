@@ -74,7 +74,7 @@ pub struct SessionClaimRequest {
     pub generation_id: String,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum SessionState {
     Paused,
@@ -82,7 +82,7 @@ pub enum SessionState {
     Expired,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SessionRecord {
     pub session_id: String,
     pub logical_node: String,

@@ -16,6 +16,7 @@ use axum::{
 };
 
 const OPENAPI_DOCUMENT: &str = include_str!("../../../registry/aggregator/openapi.json");
+const CONTROL_PLANE_TOKEN_HEADER: &str = "x-tempvpn-control-token";
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use mpp::{
     protocol::{
@@ -123,7 +124,9 @@ pub fn router(state: AppState) -> Router {
             "/sessions/{session_id}",
             get(get_session).delete(delete_session),
         );
-    router = if coordinated_sessions {
+    router = if !state.config.public_fixed_sessions_enabled {
+        router.route("/sessions", post(fixed_session_migration))
+    } else if coordinated_sessions {
         router.route("/sessions", post(create_coordinator_session))
     } else {
         router.route("/sessions", post(create_local_session))
@@ -135,6 +138,10 @@ pub fn router(state: AppState) -> Router {
             .get(reject_stream_session_get),
     );
     router.with_state(state)
+}
+
+async fn fixed_session_migration(State(state): State<AppState>) -> Response {
+    migration_response(&state.config)
 }
 
 async fn service_root(State(state): State<AppState>) -> Json<serde_json::Value> {
@@ -637,8 +644,12 @@ fn insert_receipt_header(response: &mut Response, receipt: &mpp::Receipt) {
 async fn connect_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
+    headers: HeaderMap,
     Json(request): Json<ConnectSessionRequest>,
 ) -> Response {
+    if let Err(response) = authorize_fixed_control_plane(&state.config, &headers) {
+        return response;
+    }
     if let Some(coordinator) = &state.coordinator {
         return match coordinator
             .claim(session_id, request.client_public_key)
@@ -672,7 +683,14 @@ async fn connect_session(
     }
 }
 
-async fn pause_session(State(state): State<AppState>, Path(session_id): Path<String>) -> Response {
+async fn pause_session(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = authorize_fixed_control_plane(&state.config, &headers) {
+        return response;
+    }
     if let Some(coordinator) = &state.coordinator {
         return match coordinator.pause(session_id).await {
             Ok(record) if record.phase.is_some() => transition_response(&record),
@@ -698,7 +716,11 @@ async fn pause_session(State(state): State<AppState>, Path(session_id): Path<Str
 async fn heartbeat_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
+    headers: HeaderMap,
 ) -> Response {
+    if let Err(response) = authorize_fixed_control_plane(&state.config, &headers) {
+        return response;
+    }
     if let Some(coordinator) = &state.coordinator {
         return match coordinator.heartbeat(session_id).await {
             Ok(record) => Json(public_session(&state.config, record, None)).into_response(),
@@ -715,7 +737,14 @@ async fn heartbeat_session(
     }
 }
 
-async fn session_status(State(state): State<AppState>, Path(session_id): Path<String>) -> Response {
+async fn session_status(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = authorize_fixed_control_plane(&state.config, &headers) {
+        return response;
+    }
     if let Some(coordinator) = &state.coordinator {
         return match coordinator.status(session_id).await {
             Ok(record) => Json(public_session(&state.config, record, None)).into_response(),
@@ -1259,6 +1288,33 @@ fn authorize_registry(config: &Config, headers: &HeaderMap) -> Result<(), Respon
     }
 }
 
+#[allow(clippy::result_large_err)]
+fn authorize_fixed_control_plane(config: &Config, headers: &HeaderMap) -> Result<(), Response> {
+    if config.public_fixed_sessions_enabled {
+        return Ok(());
+    }
+    let supplied = headers
+        .get(CONTROL_PLANE_TOKEN_HEADER)
+        .and_then(|value| value.to_str().ok());
+    if supplied.is_some() && supplied == config.control_plane_token.as_deref() {
+        Ok(())
+    } else {
+        Err(migration_response(config))
+    }
+}
+
+fn migration_response(config: &Config) -> Response {
+    (
+        StatusCode::MISDIRECTED_REQUEST,
+        Json(json!({
+            "error": "fixed sessions are issued and managed by the TempVPN registry",
+            "registry_url": config.fixed_session_registry_url,
+            "retryable": false
+        })),
+    )
+        .into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -1362,6 +1418,9 @@ mod tests {
             registry_token: None,
             registry_refresh_seconds: 30,
             registry_lease_seconds: 90,
+            public_fixed_sessions_enabled: true,
+            fixed_session_registry_url: "https://registry.tempvpn.xyz".into(),
+            control_plane_token: None,
             wg_interface: "wg0".into(),
             wg_command: "wg".into(),
             server_public_key: "server-key".into(),
@@ -1450,6 +1509,13 @@ mod tests {
                 store,
             })),
         }
+    }
+
+    async fn response_json(response: Response) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
     }
 
     #[tokio::test]
@@ -1733,6 +1799,86 @@ mod tests {
         )
         .unwrap();
         assert_eq!(challenge.intent.as_str(), "charge");
+    }
+
+    #[tokio::test]
+    async fn fixed_cutover_disables_public_challenges_but_preserves_health_and_streaming() {
+        let mut state = state().await;
+        state.config.public_fixed_sessions_enabled = false;
+        state.config.control_plane_token = Some("registry-control".into());
+        let app = router(state);
+
+        let purchase = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/sessions")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"duration_seconds":60}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(purchase.status(), StatusCode::MISDIRECTED_REQUEST);
+        assert!(purchase.headers().get(WWW_AUTHENTICATE).is_none());
+        assert_eq!(
+            response_json(purchase).await["registry_url"],
+            "https://registry.tempvpn.xyz"
+        );
+
+        let public_status = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/sessions/missing/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(public_status.status(), StatusCode::MISDIRECTED_REQUEST);
+
+        let internal_status = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/sessions/missing/status")
+                    .header(CONTROL_PLANE_TOKEN_HEADER, "registry-control")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(internal_status.status(), StatusCode::NOT_FOUND);
+
+        let health = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(health.status(), StatusCode::OK);
+
+        let stream = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/sessions/stream")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"client_public_key":"{TEST_CLIENT_PUBLIC_KEY}","duration_seconds":60}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stream.status(), StatusCode::PAYMENT_REQUIRED);
+        assert!(stream.headers().contains_key(WWW_AUTHENTICATE));
     }
 
     #[tokio::test]

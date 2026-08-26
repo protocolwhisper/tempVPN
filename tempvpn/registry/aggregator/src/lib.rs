@@ -12,14 +12,24 @@ use axum::{
     Json, Router,
 };
 use chrono::{DateTime, Utc};
-use futures::{future::join_all, TryStreamExt};
+use futures::{
+    future::{join_all, BoxFuture},
+    TryStreamExt,
+};
+use mpp::{
+    protocol::core::{extract_payment_scheme, PaymentCredential},
+    server::axum::{ChallengeOptions, ChargeChallenger, PaymentRequired},
+};
+use ring::digest::{digest, SHA256};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use tempvpn_coordinator_client::{ControlPlaneClient, Error as CoordinatorError, SessionRecord};
 use tower_http::cors::{Any, CorsLayer};
 
 const DEGRADED_HEADER: &str = "x-tempvpn-degraded";
 const NODE_ID_HEADER: &str = "x-tempvpn-node-id";
 const PAYMENT_RECEIPT_HEADER: &str = "payment-receipt";
+const CONTROL_PLANE_TOKEN_HEADER: &str = "x-tempvpn-control-token";
 const OPENAPI_DOCUMENT: &str = include_str!("../openapi.json");
 
 #[derive(Clone, Debug)]
@@ -33,6 +43,105 @@ pub struct AppState {
     client: reqwest::Client,
     proxy_client: reqwest::Client,
     upstreams: Arc<[Upstream]>,
+    fixed_payments: Option<Arc<FixedPaymentState>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct FixedPaymentSettings {
+    pub realm: String,
+    pub currency: String,
+    pub recipient: String,
+    pub max_duration_seconds: u64,
+    pub grace_period_seconds: u64,
+    pub node_control_token: String,
+}
+
+pub trait FixedSessionCoordinator: Send + Sync {
+    fn create_payment_intent(
+        &self,
+        intent_id: String,
+        node_id: String,
+        duration_seconds: u64,
+        fingerprint: [u8; 32],
+    ) -> BoxFuture<'static, Result<(), CoordinatorError>>;
+    fn redeem_payment(
+        &self,
+        intent_id: String,
+        transaction_reference: String,
+        fingerprint: [u8; 32],
+        grace_seconds: u64,
+    ) -> BoxFuture<'static, Result<SessionRecord, CoordinatorError>>;
+    fn status(
+        &self,
+        session_id: String,
+    ) -> BoxFuture<'static, Result<SessionRecord, CoordinatorError>>;
+    fn heartbeat(
+        &self,
+        session_id: String,
+    ) -> BoxFuture<'static, Result<SessionRecord, CoordinatorError>>;
+    fn pause(
+        &self,
+        session_id: String,
+    ) -> BoxFuture<'static, Result<SessionRecord, CoordinatorError>>;
+}
+
+impl FixedSessionCoordinator for ControlPlaneClient {
+    fn create_payment_intent(
+        &self,
+        intent_id: String,
+        node_id: String,
+        duration_seconds: u64,
+        fingerprint: [u8; 32],
+    ) -> BoxFuture<'static, Result<(), CoordinatorError>> {
+        let client = self.clone();
+        Box::pin(async move {
+            client
+                .create_payment_intent(intent_id, node_id, duration_seconds, fingerprint, 1)
+                .await?;
+            Ok(())
+        })
+    }
+    fn redeem_payment(
+        &self,
+        intent_id: String,
+        transaction_reference: String,
+        fingerprint: [u8; 32],
+        grace_seconds: u64,
+    ) -> BoxFuture<'static, Result<SessionRecord, CoordinatorError>> {
+        let client = self.clone();
+        Box::pin(async move {
+            client
+                .redeem_payment(intent_id, transaction_reference, fingerprint, grace_seconds)
+                .await
+        })
+    }
+    fn status(
+        &self,
+        session_id: String,
+    ) -> BoxFuture<'static, Result<SessionRecord, CoordinatorError>> {
+        let client = self.clone();
+        Box::pin(async move { client.status(session_id).await })
+    }
+    fn heartbeat(
+        &self,
+        session_id: String,
+    ) -> BoxFuture<'static, Result<SessionRecord, CoordinatorError>> {
+        let client = self.clone();
+        Box::pin(async move { client.heartbeat(session_id).await })
+    }
+    fn pause(
+        &self,
+        session_id: String,
+    ) -> BoxFuture<'static, Result<SessionRecord, CoordinatorError>> {
+        let client = self.clone();
+        Box::pin(async move { client.pause(session_id).await })
+    }
+}
+
+struct FixedPaymentState {
+    coordinator: Arc<dyn FixedSessionCoordinator>,
+    challenger: Arc<dyn ChargeChallenger>,
+    settings: FixedPaymentSettings,
 }
 
 impl AppState {
@@ -45,7 +154,22 @@ impl AppState {
                 .connect_timeout(timeout)
                 .build()?,
             upstreams: upstreams.into(),
+            fixed_payments: None,
         })
+    }
+
+    pub fn with_fixed_payments(
+        mut self,
+        coordinator: Arc<dyn FixedSessionCoordinator>,
+        challenger: Arc<dyn ChargeChallenger>,
+        settings: FixedPaymentSettings,
+    ) -> Self {
+        self.fixed_payments = Some(Arc::new(FixedPaymentState {
+            coordinator,
+            challenger,
+            settings,
+        }));
+        self
     }
 }
 
@@ -79,6 +203,12 @@ struct UpstreamResult {
 struct HealthResponse {
     status: &'static str,
     upstreams: BTreeMap<String, bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateFixedSessionRequest {
+    node_id: String,
+    duration_seconds: u64,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -179,15 +309,98 @@ async fn create_session(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    proxy_to_selected_node(&state, headers, body, Method::POST, "/sessions").await
+    let Some(fixed) = &state.fixed_payments else {
+        return proxy_to_selected_node(&state, headers, body, Method::POST, "/sessions").await;
+    };
+    let request = match serde_json::from_slice::<CreateFixedSessionRequest>(&body) {
+        Ok(request) => request,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "node_id and duration_seconds are required" })),
+            )
+                .into_response()
+        }
+    };
+    if request.node_id.trim().is_empty()
+        || request.duration_seconds == 0
+        || request.duration_seconds % 60 != 0
+        || request.duration_seconds > fixed.settings.max_duration_seconds
+    {
+        return (StatusCode::BAD_REQUEST, Json(json!({
+            "error": format!("duration_seconds must be a positive multiple of 60 no greater than {}", fixed.settings.max_duration_seconds)
+        }))).into_response();
+    }
+    if let Err(response) = require_eligible_node(&state, &request.node_id).await {
+        return response;
+    }
+    let amount = fixed_session_price(request.duration_seconds);
+    let fingerprint = fixed_session_fingerprint(
+        &request.node_id,
+        request.duration_seconds,
+        &amount,
+        &fixed.settings,
+    );
+    let payment_header = headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(extract_payment_scheme);
+    let Some(payment_header) = payment_header else {
+        return registry_payment_required(fixed, &request, &amount, fingerprint).await;
+    };
+    let credential = match PaymentCredential::from_header(payment_header) {
+        Ok(credential) => credential,
+        Err(_) => return registry_payment_required(fixed, &request, &amount, fingerprint).await,
+    };
+    let receipt = match fixed
+        .challenger
+        .verify_payment_for_amount(payment_header, &amount)
+        .await
+    {
+        Ok(receipt) => receipt,
+        Err(_) => return registry_payment_required(fixed, &request, &amount, fingerprint).await,
+    };
+    match fixed
+        .coordinator
+        .redeem_payment(
+            credential.challenge.id,
+            receipt.reference.clone(),
+            fingerprint,
+            fixed.settings.grace_period_seconds,
+        )
+        .await
+    {
+        Ok(session) => {
+            let mut response = (StatusCode::CREATED, Json(session)).into_response();
+            if let Ok(value) = receipt.to_header() {
+                if let Ok(header) = HeaderValue::from_str(&value) {
+                    response
+                        .headers_mut()
+                        .insert(HeaderName::from_static(PAYMENT_RECEIPT_HEADER), header);
+                }
+            }
+            response
+        }
+        Err(error) => coordinator_error_response(error),
+    }
 }
 
 async fn connect_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
-    headers: HeaderMap,
+    mut headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    if let Some(fixed) = &state.fixed_payments {
+        let Ok(token) = HeaderValue::from_str(&fixed.settings.node_control_token) else {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "registry node-control token is invalid" })),
+            )
+                .into_response();
+        };
+        headers.insert(HeaderName::from_static(CONTROL_PLANE_TOKEN_HEADER), token);
+    }
     proxy_to_selected_node(
         &state,
         headers,
@@ -243,6 +456,12 @@ async fn pause_session(
     Path(session_id): Path<String>,
     headers: HeaderMap,
 ) -> Response {
+    if let Some(fixed) = &state.fixed_payments {
+        return match fixed.coordinator.pause(session_id).await {
+            Ok(session) => Json(session).into_response(),
+            Err(error) => coordinator_error_response(error),
+        };
+    }
     proxy_to_any_node(
         &state,
         headers,
@@ -258,6 +477,12 @@ async fn heartbeat_session(
     Path(session_id): Path<String>,
     headers: HeaderMap,
 ) -> Response {
+    if let Some(fixed) = &state.fixed_payments {
+        return match fixed.coordinator.heartbeat(session_id).await {
+            Ok(session) => Json(session).into_response(),
+            Err(error) => coordinator_error_response(error),
+        };
+    }
     proxy_to_any_node(
         &state,
         headers,
@@ -273,6 +498,12 @@ async fn session_status(
     Path(session_id): Path<String>,
     headers: HeaderMap,
 ) -> Response {
+    if let Some(fixed) = &state.fixed_payments {
+        return match fixed.coordinator.status(session_id).await {
+            Ok(session) => Json(session).into_response(),
+            Err(error) => coordinator_error_response(error),
+        };
+    }
     proxy_to_any_node(
         &state,
         headers,
@@ -281,6 +512,128 @@ async fn session_status(
         &format!("/sessions/{session_id}/status"),
     )
     .await
+}
+
+async fn require_eligible_node(state: &AppState, node_id: &str) -> Result<(), Response> {
+    let nodes = merge_nodes(
+        fetch_all(
+            state,
+            &NodesQuery {
+                available: Some(true),
+                ..NodesQuery::default()
+            },
+        )
+        .await,
+    );
+    let Some(node) = nodes.get(node_id) else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "selected node is unavailable" })),
+        )
+            .into_response());
+    };
+    let accepting = node
+        .fields
+        .get("accepting_sessions")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let slots = node
+        .fields
+        .get("available_slots")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if !accepting || slots == 0 || node.lease_expires_at <= Utc::now() {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "selected node is not accepting sessions" })),
+        )
+            .into_response());
+    }
+    Ok(())
+}
+
+fn fixed_session_price(duration_seconds: u64) -> String {
+    let cents = duration_seconds / 60;
+    format!("{}.{:02}", cents / 100, cents % 100)
+}
+
+fn fixed_session_fingerprint(
+    node_id: &str,
+    duration_seconds: u64,
+    amount: &str,
+    settings: &FixedPaymentSettings,
+) -> [u8; 32] {
+    let input = format!(
+        "fixed-session-v2\0{node_id}\0{duration_seconds}\0{amount}\0{}\0{}\0{}\0/sessions",
+        settings.realm, settings.currency, settings.recipient
+    );
+    digest(&SHA256, input.as_bytes())
+        .as_ref()
+        .try_into()
+        .expect("SHA-256 is 32 bytes")
+}
+
+async fn registry_payment_required(
+    fixed: &FixedPaymentState,
+    request: &CreateFixedSessionRequest,
+    amount: &str,
+    fingerprint: [u8; 32],
+) -> Response {
+    let challenge = match fixed.challenger.challenge(
+        amount,
+        ChallengeOptions {
+            description: Some("Temporary WireGuard VPN session"),
+            mppx_scope: None,
+        },
+    ) {
+        Ok(challenge) => challenge,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": error.to_string(), "retryable": true })),
+            )
+                .into_response()
+        }
+    };
+    match fixed
+        .coordinator
+        .create_payment_intent(
+            challenge.id.clone(),
+            request.node_id.clone(),
+            request.duration_seconds,
+            fingerprint,
+        )
+        .await
+    {
+        Ok(()) => PaymentRequired(challenge).into_response(),
+        Err(error) => coordinator_error_response(error),
+    }
+}
+
+fn coordinator_error_response(error: CoordinatorError) -> Response {
+    let (status, retryable) = match &error {
+        CoordinatorError::Rejected { status: 404, .. } => (StatusCode::NOT_FOUND, false),
+        CoordinatorError::Rejected { status: 409, .. } => (StatusCode::CONFLICT, false),
+        CoordinatorError::Rejected { status: 400, .. } => (StatusCode::BAD_REQUEST, false),
+        CoordinatorError::Unavailable(_)
+        | CoordinatorError::Http(_)
+        | CoordinatorError::Io(_)
+        | CoordinatorError::Configuration(_)
+        | CoordinatorError::Protocol(_)
+        | CoordinatorError::Rejected { .. } => (StatusCode::SERVICE_UNAVAILABLE, true),
+    };
+    let mut response = (
+        status,
+        Json(json!({ "error": error.to_string(), "retryable": retryable })),
+    )
+        .into_response();
+    if retryable {
+        response.headers_mut().insert(
+            axum::http::header::RETRY_AFTER,
+            HeaderValue::from_static("1"),
+        );
+    }
+    response
 }
 
 async fn proxy_to_selected_node(
@@ -378,7 +731,12 @@ async fn proxy_request(
 ) -> Response {
     let url = format!("{}{}", api_url.trim_end_matches('/'), path);
     let mut request = state.proxy_client.request(method, url).body(body);
-    for name in [AUTHORIZATION, ACCEPT, CONTENT_TYPE] {
+    for name in [
+        AUTHORIZATION,
+        ACCEPT,
+        CONTENT_TYPE,
+        HeaderName::from_static(CONTROL_PLANE_TOKEN_HEADER),
+    ] {
         if let Some(value) = headers.get(&name) {
             request = request.header(name, value);
         }
@@ -503,11 +861,136 @@ mod tests {
         routing::{get, post},
         Json, Router,
     };
+    use mpp::protocol::core::{
+        format_authorization, Base64UrlJson, PaymentChallenge, PaymentPayload, Receipt,
+    };
     use serde_json::{json, Value};
     use tokio::{net::TcpListener, sync::Mutex};
     use tower::ServiceExt;
 
     use super::*;
+
+    #[derive(Clone, Default)]
+    struct MockCoordinator {
+        intents: Arc<Mutex<Vec<(String, String, u64, [u8; 32])>>>,
+        redemptions: Arc<Mutex<Vec<(String, String, [u8; 32])>>>,
+    }
+
+    fn paused_session() -> SessionRecord {
+        SessionRecord {
+            session_id: "sess_portable".into(),
+            logical_node: "madrid".into(),
+            node_url: "https://madrid.test".into(),
+            state: tempvpn_coordinator_client::SessionState::Paused,
+            phase: None,
+            total_seconds: 60,
+            remaining_seconds: 60,
+            created_at: Utc::now(),
+            connected_at: None,
+            last_heartbeat_at: None,
+            grace_deadline: Utc::now() + chrono::Duration::days(7),
+            assigned_ip: None,
+            client_public_key: None,
+            active_generation_id: None,
+        }
+    }
+
+    impl FixedSessionCoordinator for MockCoordinator {
+        fn create_payment_intent(
+            &self,
+            intent_id: String,
+            node_id: String,
+            duration_seconds: u64,
+            fingerprint: [u8; 32],
+        ) -> BoxFuture<'static, Result<(), CoordinatorError>> {
+            let intents = self.intents.clone();
+            Box::pin(async move {
+                intents
+                    .lock()
+                    .await
+                    .push((intent_id, node_id, duration_seconds, fingerprint));
+                Ok(())
+            })
+        }
+        fn redeem_payment(
+            &self,
+            intent_id: String,
+            reference: String,
+            fingerprint: [u8; 32],
+            _grace: u64,
+        ) -> BoxFuture<'static, Result<SessionRecord, CoordinatorError>> {
+            let redemptions = self.redemptions.clone();
+            Box::pin(async move {
+                redemptions
+                    .lock()
+                    .await
+                    .push((intent_id, reference, fingerprint));
+                Ok(paused_session())
+            })
+        }
+        fn status(
+            &self,
+            _session_id: String,
+        ) -> BoxFuture<'static, Result<SessionRecord, CoordinatorError>> {
+            Box::pin(async { Ok(paused_session()) })
+        }
+        fn heartbeat(
+            &self,
+            _session_id: String,
+        ) -> BoxFuture<'static, Result<SessionRecord, CoordinatorError>> {
+            Box::pin(async { Ok(paused_session()) })
+        }
+        fn pause(
+            &self,
+            _session_id: String,
+        ) -> BoxFuture<'static, Result<SessionRecord, CoordinatorError>> {
+            Box::pin(async { Ok(paused_session()) })
+        }
+    }
+
+    struct MockChallenger;
+    impl ChargeChallenger for MockChallenger {
+        fn challenge(
+            &self,
+            amount: &str,
+            _options: ChallengeOptions,
+        ) -> Result<PaymentChallenge, String> {
+            Ok(PaymentChallenge::new(
+                "intent-1", "registry.tempvpn.xyz", "tempo", "charge",
+                Base64UrlJson::from_value(&json!({"amount": amount, "currency": "0xcurrency", "recipient": "0xrecipient"})).unwrap(),
+            ))
+        }
+        fn verify_payment(
+            &self,
+            _credential: &str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Receipt, String>> + Send>>
+        {
+            Box::pin(async { Ok(Receipt::success("tempo", "0xpaid")) })
+        }
+    }
+
+    fn fixed_test_state(upstream: String, coordinator: MockCoordinator) -> AppState {
+        AppState::new(
+            vec![Upstream {
+                name: "test".into(),
+                url: upstream,
+            }],
+            Duration::from_secs(1),
+        )
+        .unwrap()
+        .with_fixed_payments(
+            Arc::new(coordinator),
+            Arc::new(MockChallenger),
+            FixedPaymentSettings {
+                realm: "registry.tempvpn.xyz".into(),
+                currency: "0xcurrency".into(),
+                recipient: "0xrecipient".into(),
+                max_duration_seconds: 3600,
+                grace_period_seconds: 604800,
+                node_control_token: "control-secret".into(),
+            },
+        )
+    }
 
     #[derive(Clone)]
     struct MockState {
@@ -563,6 +1046,8 @@ mod tests {
             "api_url": state.api_url,
             "wireguard_endpoint": "madrid.test:51820",
             "expected_exit_ip": "127.0.0.1",
+            "accepting_sessions": true,
+            "available_slots": 10,
             "lease_expires_at": "2030-01-01T00:00:00Z"
         }]))
     }
@@ -584,6 +1069,21 @@ mod tests {
             Json(json!({ "error": "payment required" })),
         )
             .into_response()
+    }
+
+    async fn gateway_connect(
+        State(state): State<GatewayMockState>,
+        headers: HeaderMap,
+        body: Bytes,
+    ) -> Response {
+        let mut body: Value = serde_json::from_slice(&body).unwrap();
+        body["control_token"] = headers
+            .get(CONTROL_PLANE_TOKEN_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .map(Value::from)
+            .unwrap_or(Value::Null);
+        state.requests.lock().await.push((None, body));
+        Json(json!({ "session_id": "sess_portable", "state": "active" })).into_response()
     }
 
     async fn gateway_stream_head(
@@ -621,6 +1121,7 @@ mod tests {
                 Router::new()
                     .route("/nodes", get(gateway_nodes))
                     .route("/sessions", post(gateway_session))
+                    .route("/sessions/{session_id}/connect", post(gateway_connect))
                     .route(
                         "/sessions/stream",
                         post(gateway_session).head(gateway_stream_head),
@@ -641,6 +1142,8 @@ mod tests {
             "api_url": format!("http://{id}:8080"),
             "wireguard_endpoint": format!("{id}:51820"),
             "expected_exit_ip": "127.0.0.1",
+            "accepting_sessions": true,
+            "available_slots": 10,
             "lease_expires_at": lease
         })
     }
@@ -717,6 +1220,176 @@ mod tests {
             response_json(response).await["error"],
             "node_id is required"
         );
+    }
+
+    #[tokio::test]
+    async fn registry_owns_fixed_challenge_price_redemption_and_receipt() {
+        let (upstream, _) = spawn_gateway_mock().await;
+        let coordinator = MockCoordinator::default();
+        let app = router(fixed_test_state(upstream, coordinator.clone()));
+        let unpaid = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/sessions")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"node_id":"madrid","duration_seconds":120}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unpaid.status(), StatusCode::PAYMENT_REQUIRED);
+        let challenge =
+            PaymentChallenge::from_header(unpaid.headers()[WWW_AUTHENTICATE].to_str().unwrap())
+                .unwrap();
+        assert_eq!(challenge.realm, "registry.tempvpn.xyz");
+        assert_eq!(challenge.request.decode_value().unwrap()["amount"], "0.02");
+        assert_eq!(coordinator.intents.lock().await.len(), 1);
+
+        let credential =
+            PaymentCredential::new(challenge.to_echo(), PaymentPayload::transaction("0xabc"));
+        let authorization = format_authorization(&credential).unwrap();
+        let paid = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/sessions")
+                    .header(CONTENT_TYPE, "application/json")
+                    .header(AUTHORIZATION, authorization)
+                    .body(Body::from(r#"{"node_id":"madrid","duration_seconds":120}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(paid.status(), StatusCode::CREATED);
+        let receipt =
+            Receipt::from_header(paid.headers()[PAYMENT_RECEIPT_HEADER].to_str().unwrap()).unwrap();
+        assert_eq!(receipt.reference, "0xpaid");
+        assert_eq!(response_json(paid).await["session_id"], "sess_portable");
+        assert_eq!(coordinator.redemptions.lock().await.len(), 1);
+
+        // If the first 201 is lost, replaying the same paid request asks the
+        // durable coordinator for the already-created portable session.
+        let replay = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/sessions")
+                    .header(CONTENT_TYPE, "application/json")
+                    .header(AUTHORIZATION, format_authorization(&credential).unwrap())
+                    .body(Body::from(r#"{"node_id":"madrid","duration_seconds":120}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(replay.status(), StatusCode::CREATED);
+        assert!(replay.headers().contains_key(PAYMENT_RECEIPT_HEADER));
+        assert_eq!(response_json(replay).await["session_id"], "sess_portable");
+        assert_eq!(coordinator.redemptions.lock().await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn registry_rejects_partial_minutes_before_challenge() {
+        let (upstream, _) = spawn_gateway_mock().await;
+        let coordinator = MockCoordinator::default();
+        let response = router(fixed_test_state(upstream, coordinator.clone()))
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/sessions")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"node_id":"madrid","duration_seconds":61}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(response.headers().get(WWW_AUTHENTICATE).is_none());
+        assert!(coordinator.intents.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn registry_rejects_zero_capacity_before_challenge() {
+        let (upstream, _) = spawn_mock(
+            StatusCode::OK,
+            json!([{
+                "id": "full-node",
+                "api_url": "https://full-node.test",
+                "accepting_sessions": true,
+                "available_slots": 0,
+                "lease_expires_at": "2030-01-01T00:00:00Z"
+            }]),
+        )
+        .await;
+        let coordinator = MockCoordinator::default();
+        let response = router(fixed_test_state(upstream, coordinator.clone()))
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/sessions")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"node_id":"full-node","duration_seconds":60}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(response.headers().get(WWW_AUTHENTICATE).is_none());
+        assert!(coordinator.intents.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn fixed_lifecycle_reads_coordinator_at_registry() {
+        let (upstream, _) = spawn_gateway_mock().await;
+        let coordinator = MockCoordinator::default();
+        let app = router(fixed_test_state(upstream, coordinator));
+        for (method, path) in [
+            (Method::GET, "/sessions/sess_portable/status"),
+            (Method::POST, "/sessions/sess_portable/heartbeat"),
+            (Method::POST, "/sessions/sess_portable/pause"),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(path)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response_json(response).await["session_id"], "sess_portable");
+        }
+    }
+
+    #[tokio::test]
+    async fn registry_authenticates_fixed_activation_to_selected_node() {
+        let (upstream, requests) = spawn_gateway_mock().await;
+        let coordinator = MockCoordinator::default();
+        let response = router(fixed_test_state(upstream, coordinator))
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/sessions/sess_portable/connect")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"node_id":"madrid","client_public_key":"client-key"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let seen = requests.lock().await;
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].1["control_token"], "control-secret");
+        assert_eq!(seen[0].1["client_public_key"], "client-key");
     }
 
     #[tokio::test]

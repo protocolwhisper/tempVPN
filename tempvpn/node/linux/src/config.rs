@@ -85,6 +85,9 @@ pub struct Config {
     pub registry_token: Option<String>,
     pub registry_refresh_seconds: u64,
     pub registry_lease_seconds: u64,
+    pub public_fixed_sessions_enabled: bool,
+    pub fixed_session_registry_url: String,
+    pub control_plane_token: Option<String>,
     pub wg_interface: String,
     pub wg_command: String,
     pub server_public_key: String,
@@ -124,6 +127,9 @@ struct FileConfig {
     registry_token: Option<String>,
     registry_refresh_seconds: Option<u64>,
     registry_lease_seconds: Option<u64>,
+    public_fixed_sessions_enabled: Option<bool>,
+    fixed_session_registry_url: Option<String>,
+    control_plane_token: Option<String>,
     wg_interface: Option<String>,
     wg_command: Option<String>,
     server_public_key: Option<String>,
@@ -225,6 +231,20 @@ impl Config {
             file.registry_lease_seconds,
             "90",
         )?;
+        let public_fixed_sessions_enabled = env_or(
+            "VPN_NODE_PUBLIC_FIXED_SESSIONS_ENABLED",
+            file.public_fixed_sessions_enabled,
+            "true",
+        )?;
+        let fixed_session_registry_url = env_or_default(
+            "VPN_NODE_FIXED_SESSION_REGISTRY_URL",
+            file.fixed_session_registry_url,
+            "https://registry.tempvpn.xyz",
+        )
+        .trim_end_matches('/')
+        .to_string();
+        let control_plane_token = env_var("VPN_NODE_CONTROL_PLANE_TOKEN")
+            .or_else(|| file.control_plane_token.filter(|value| !value.is_empty()));
         if registry_mode && registry_token.is_none() {
             return Err(Error::InvalidConfig(
                 "registry_token is required when registry_mode is enabled".into(),
@@ -355,6 +375,18 @@ impl Config {
             )))
             }
         };
+        if coordinator.is_some() && !public_fixed_sessions_enabled && control_plane_token.is_none()
+        {
+            return Err(Error::InvalidConfig(
+                "VPN_NODE_CONTROL_PLANE_TOKEN is required when public fixed sessions are disabled"
+                    .into(),
+            ));
+        }
+        if control_plane_token.as_deref() == Some(admin_token.as_str()) {
+            return Err(Error::InvalidConfig(
+                "control_plane_token must be different from admin_token".into(),
+            ));
+        }
         let audit_log_path = env::var_os("VPN_NODE_AUDIT_LOG_PATH")
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
@@ -385,6 +417,9 @@ impl Config {
             registry_token,
             registry_refresh_seconds,
             registry_lease_seconds,
+            public_fixed_sessions_enabled,
+            fixed_session_registry_url,
+            control_plane_token,
             wg_interface,
             wg_command,
             server_public_key,

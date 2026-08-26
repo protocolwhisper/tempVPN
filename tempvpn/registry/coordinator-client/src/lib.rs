@@ -29,6 +29,14 @@ pub struct ClientConfig {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ControlPlaneConfig {
+    pub url: String,
+    pub root_ca_path: PathBuf,
+    pub certificate_path: PathBuf,
+    pub private_key_path: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GenerationMetadata {
     pub node_name: String,
     pub region: String,
@@ -50,26 +58,45 @@ pub struct CoordinatorClient {
     generation_id: String,
 }
 
+#[derive(Clone)]
+pub struct ControlPlaneClient {
+    http: Client,
+    base_url: String,
+}
+
+async fn authenticated_http(
+    root_ca_path: &PathBuf,
+    certificate_path: &PathBuf,
+    private_key_path: &PathBuf,
+) -> Result<Client> {
+    let root = tokio::fs::read(root_ca_path).await?;
+    let certificate = tokio::fs::read(certificate_path).await?;
+    let private_key = tokio::fs::read(private_key_path).await?;
+    let mut identity_pem = certificate;
+    identity_pem.push(b'\n');
+    identity_pem.extend(private_key);
+    let identity = Identity::from_pem(&identity_pem).map_err(|error| {
+        Error::Configuration(format!("invalid coordinator client identity: {error}"))
+    })?;
+    let root = Certificate::from_pem(&root)
+        .map_err(|error| Error::Configuration(format!("invalid coordinator root CA: {error}")))?;
+    Client::builder()
+        .https_only(true)
+        .identity(identity)
+        .add_root_certificate(root)
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(Into::into)
+}
+
 impl CoordinatorClient {
     pub async fn new(config: &ClientConfig) -> Result<Self> {
-        let root = tokio::fs::read(&config.root_ca_path).await?;
-        let certificate = tokio::fs::read(&config.certificate_path).await?;
-        let private_key = tokio::fs::read(&config.private_key_path).await?;
-        let mut identity_pem = certificate;
-        identity_pem.push(b'\n');
-        identity_pem.extend(private_key);
-        let identity = Identity::from_pem(&identity_pem).map_err(|error| {
-            Error::Configuration(format!("invalid coordinator client identity: {error}"))
-        })?;
-        let root = Certificate::from_pem(&root).map_err(|error| {
-            Error::Configuration(format!("invalid coordinator root CA: {error}"))
-        })?;
-        let http = Client::builder()
-            .https_only(true)
-            .identity(identity)
-            .add_root_certificate(root)
-            .timeout(std::time::Duration::from_secs(10))
-            .build()?;
+        let http = authenticated_http(
+            &config.root_ca_path,
+            &config.certificate_path,
+            &config.private_key_path,
+        )
+        .await?;
         Ok(Self {
             http,
             base_url: config.url.trim_end_matches('/').to_string(),
@@ -261,4 +288,118 @@ impl CoordinatorClient {
             .await
             .map_err(|error| Error::Protocol(error.to_string()))
     }
+}
+
+impl ControlPlaneClient {
+    pub async fn new(config: &ControlPlaneConfig) -> Result<Self> {
+        Ok(Self {
+            http: authenticated_http(
+                &config.root_ca_path,
+                &config.certificate_path,
+                &config.private_key_path,
+            )
+            .await?,
+            base_url: config.url.trim_end_matches('/').to_string(),
+        })
+    }
+
+    pub async fn create_payment_intent(
+        &self,
+        intent_id: String,
+        logical_node: String,
+        duration_seconds: u64,
+        request_fingerprint: [u8; 32],
+        challenge_key_version: u32,
+    ) -> Result<PaymentIntent> {
+        self.post(
+            "/payment-intents",
+            &PaymentIntentRequest {
+                intent_id: Some(intent_id),
+                logical_node,
+                duration_seconds,
+                request_fingerprint,
+                challenge_key_version,
+                expires_at: Utc::now() + Duration::minutes(5),
+            },
+        )
+        .await
+    }
+
+    pub async fn redeem_payment(
+        &self,
+        intent_id: String,
+        transaction_reference: String,
+        request_fingerprint: [u8; 32],
+        grace_seconds: u64,
+    ) -> Result<SessionRecord> {
+        self.post(
+            "/payments/redeem",
+            &PaymentRedemptionRequest {
+                intent_id,
+                payment_method: "tempo".into(),
+                transaction_reference,
+                request_fingerprint,
+                grace_seconds,
+            },
+        )
+        .await
+    }
+
+    pub async fn status(&self, session_id: String) -> Result<SessionRecord> {
+        self.post("/sessions/status", &SessionTokenRequest { session_id })
+            .await
+    }
+
+    pub async fn heartbeat(&self, session_id: String) -> Result<SessionRecord> {
+        self.post("/sessions/heartbeat", &SessionTokenRequest { session_id })
+            .await
+    }
+
+    pub async fn pause(&self, session_id: String) -> Result<SessionRecord> {
+        self.post("/sessions/pause", &SessionTokenRequest { session_id })
+            .await
+    }
+
+    async fn post<TRequest, TResponse>(&self, path: &str, request: &TRequest) -> Result<TResponse>
+    where
+        TRequest: Serialize + ?Sized,
+        TResponse: DeserializeOwned,
+    {
+        post_json(&self.http, &self.base_url, path, request).await
+    }
+}
+
+async fn post_json<TRequest, TResponse>(
+    http: &Client,
+    base_url: &str,
+    path: &str,
+    request: &TRequest,
+) -> Result<TResponse>
+where
+    TRequest: Serialize + ?Sized,
+    TResponse: DeserializeOwned,
+{
+    let url = format!("{base_url}{API_PREFIX}{path}");
+    let response = http
+        .post(url)
+        .json(request)
+        .send()
+        .await
+        .map_err(|error| Error::Unavailable(error.to_string()))?;
+    let status = response.status();
+    if !status.is_success() {
+        let message = response
+            .json::<ApiError>()
+            .await
+            .map(|body| body.error)
+            .unwrap_or_else(|_| "coordinator request failed".into());
+        return Err(Error::Rejected {
+            status: status.as_u16(),
+            message,
+        });
+    }
+    response
+        .json()
+        .await
+        .map_err(|error| Error::Protocol(error.to_string()))
 }
