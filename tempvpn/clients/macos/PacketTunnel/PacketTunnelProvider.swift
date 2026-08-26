@@ -131,7 +131,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         request.httpMethod = "POST"
         request.timeoutInterval = 5
         guard let (data, response) = try? await URLSession.shared.data(for: request),
-              let http = response as? HTTPURLResponse,
               let http = response as? HTTPURLResponse else { return .unavailable }
         guard (200..<300).contains(http.statusCode) else {
             return (400..<500).contains(http.statusCode) ? .inactive : .unavailable

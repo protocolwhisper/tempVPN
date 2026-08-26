@@ -7,6 +7,7 @@ mod keygen;
 mod node_client;
 mod process;
 mod proxy;
+mod session_store;
 mod status;
 mod wireguard_client;
 
@@ -67,14 +68,22 @@ async fn check_node(config: Config, args: cli::CheckArgs) -> Result<()> {
 }
 
 async fn select_node(config: Config, args: cli::SelectArgs) -> Result<()> {
+    let config = with_registry_override(config, args.selection.registry_url.as_deref())?;
     let filters = discovery_filters(&args.selection)?;
-    let node = NodeClient::select(&config, &filters, args.selection.node_url.as_deref()).await?;
+    let node = NodeClient::select(
+        &config,
+        &filters,
+        args.selection.node_id.as_deref(),
+        args.selection.node_url.as_deref(),
+    )
+    .await?;
     if args.json {
         let selected = node.selected_node();
         println!(
             "{}",
             serde_json::json!({
-                "node_url": node.base_url(),
+                "registry_url": node.base_url(),
+                "node_url": selected.map(|node| node.api_url.as_str()),
                 "node_id": selected.map(|node| node.id.as_str()),
                 "node_name": selected.map(|node| node.name.as_str()),
                 "country_code": selected.and_then(|node| node.country_code.as_deref()),
@@ -86,12 +95,18 @@ async fn select_node(config: Config, args: cli::SelectArgs) -> Result<()> {
             })
         );
     } else {
-        println!("{}", node.base_url());
+        println!(
+            "{}",
+            node.selected_node()
+                .map(|node| node.id.as_str())
+                .unwrap_or_default()
+        );
     }
     Ok(())
 }
 
 async fn run(config: Config, args: cli::RunArgs) -> Result<()> {
+    let config = with_registry_override(config, args.selection.registry_url.as_deref())?;
     let (keypair, session, node_url) = get_session(
         &config,
         args.duration,
@@ -201,11 +216,16 @@ async fn run(config: Config, args: cli::RunArgs) -> Result<()> {
             warn!(error = %err, "failed to bring WireGuard tunnel down");
         }
     }
-    if let Err(err) = NodeClient::for_base_url(node_url, &config)
+    match NodeClient::new(&config)
         .pause_session(&session.session_id)
         .await
     {
-        warn!(error = %err, "failed to pause server session");
+        Ok(paused) => {
+            if let Err(err) = session_store::upsert(&config.session_store_file, paused).await {
+                warn!(error = %err, "failed to update saved session");
+            }
+        }
+        Err(err) => warn!(error = %err, "failed to pause server session"),
     }
     info!(
         session_id = session.session_id,
@@ -221,6 +241,7 @@ async fn run(config: Config, args: cli::RunArgs) -> Result<()> {
 }
 
 async fn connect(config: Config, args: cli::ConnectArgs) -> Result<()> {
+    let config = with_registry_override(config, args.selection.registry_url.as_deref())?;
     let (keypair, session, node_url) = get_session(
         &config,
         args.duration,
@@ -244,18 +265,24 @@ async fn connect(config: Config, args: cli::ConnectArgs) -> Result<()> {
 
     if let Err(err) = wireguard_client::up_config(&config.wg_quick_command, &config_path).await {
         let _ = fs::remove_file(&config_path).await;
-        let _ = NodeClient::for_base_url(node_url.clone(), &config)
+        if let Ok(paused) = NodeClient::new(&config)
             .pause_session(&session.session_id)
-            .await;
+            .await
+        {
+            let _ = session_store::upsert(&config.session_store_file, paused).await;
+        }
         return Err(err);
     }
 
     if !wireguard_client::interface_is_active(&config.wg_command, &config.interface_name).await {
         let _ = wireguard_client::down_config(&config.wg_quick_command, &config_path).await;
         let _ = fs::remove_file(&config_path).await;
-        let _ = NodeClient::for_base_url(node_url.clone(), &config)
+        if let Ok(paused) = NodeClient::new(&config)
             .pause_session(&session.session_id)
-            .await;
+            .await
+        {
+            let _ = session_store::upsert(&config.session_store_file, paused).await;
+        }
         return Err(Error::TunnelInactive(config.interface_name));
     }
 
@@ -322,9 +349,10 @@ async fn disconnect(config: Config) -> Result<()> {
         wireguard_client::down_config(&config.wg_quick_command, &path).await?;
     }
 
-    NodeClient::for_base_url(status.node_url.clone(), &config)
+    let paused = NodeClient::new(&config)
         .pause_session(&status.session_id)
         .await?;
+    session_store::upsert(&config.session_store_file, paused).await?;
     status::remove(&config.status_file).await;
     println!("Disconnected: {}", status.interface_name);
     println!("Session paused: {}", status.session_id);
@@ -333,9 +361,10 @@ async fn disconnect(config: Config) -> Result<()> {
 
 async fn heartbeat(config: Config) -> Result<()> {
     let mut status = status::read(&config.status_file).await?;
-    let session = NodeClient::for_base_url(status.node_url.clone(), &config)
+    let session = NodeClient::new(&config)
         .heartbeat(&status.session_id)
         .await?;
+    session_store::upsert(&config.session_store_file, session.clone()).await?;
     status.remaining_seconds = session.remaining_seconds;
     status.not_after = session.not_after;
     status.write(&config.status_file).await?;
@@ -347,6 +376,7 @@ async fn heartbeat(config: Config) -> Result<()> {
 }
 
 async fn generate_config(config: Config, args: cli::ConfigArgs) -> Result<()> {
+    let config = with_registry_override(config, args.selection.registry_url.as_deref())?;
     let (keypair, session, _node_url) = get_session(
         &config,
         args.duration,
@@ -394,29 +424,80 @@ async fn get_session(
         };
         let raw_session = fs::read_to_string(session_response).await?;
         if let Ok(session) = serde_json::from_str::<node_client::Session>(&raw_session) {
-            enforce_selected_node(selection.node_url.as_deref(), &session.node_url)?;
-            let node_url = session.node_url.clone();
-            return Ok((keypair, session, node_url));
+            return Ok((keypair, session, config.node_url.clone()));
         }
         let created = serde_json::from_str::<node_client::CreatedSession>(&raw_session)?;
-        enforce_selected_node(selection.node_url.as_deref(), &created.node_url)?;
-        let node = NodeClient::for_base_url(created.node_url.clone(), config);
+        session_store::upsert(&config.session_store_file, created.clone()).await?;
+        let filters = discovery_filters(selection)?;
+        let node = NodeClient::select(
+            config,
+            &filters,
+            selection.node_id.as_deref(),
+            selection.node_url.as_deref(),
+        )
+        .await?;
         let session = node
             .connect_session(&created.session_id, &keypair.public_key)
             .await?;
-        return Ok((keypair, session, node.base_url().to_string()));
+        return Ok((keypair, session, config.node_url.clone()));
     }
 
     let filters = discovery_filters(selection)?;
-    let node = NodeClient::select(config, &filters, selection.node_url.as_deref()).await?;
-    let node_url = node.base_url().to_string();
+    let node = NodeClient::select(
+        config,
+        &filters,
+        selection.node_id.as_deref(),
+        selection.node_url.as_deref(),
+    )
+    .await?;
+    let node_url = config.node_url.clone();
     let keypair = keygen::generate(&config.wg_command).await?;
     info!("generated ephemeral WireGuard keypair");
-    let created = node.create_session(duration).await?;
+    let created = match reusable_session(config, duration).await? {
+        Some(session) => {
+            info!(
+                remaining_seconds = session.remaining_seconds,
+                "reusing saved VPN balance"
+            );
+            session
+        }
+        None => {
+            let session = node.create_session(duration).await?;
+            session_store::upsert(&config.session_store_file, session.clone()).await?;
+            session
+        }
+    };
     let session = node
         .connect_session(&created.session_id, &keypair.public_key)
         .await?;
     Ok((keypair, session, node_url))
+}
+
+async fn reusable_session(
+    config: &Config,
+    required_seconds: u64,
+) -> Result<Option<node_client::CreatedSession>> {
+    let client = NodeClient::new(config);
+    for saved in session_store::load(&config.session_store_file).await? {
+        if saved.not_after <= chrono::Utc::now() || saved.remaining_seconds < required_seconds {
+            continue;
+        }
+        match client.session_status(&saved.session_id).await {
+            Ok(current) => {
+                session_store::upsert(&config.session_store_file, current.clone()).await?;
+                if current.state == "paused"
+                    && current.not_after > chrono::Utc::now()
+                    && current.remaining_seconds >= required_seconds
+                {
+                    return Ok(Some(current));
+                }
+            }
+            Err(Error::Reqwest(error))
+                if error.status() == Some(reqwest::StatusCode::NOT_FOUND) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(None)
 }
 
 fn discovery_filters(selection: &cli::SelectionArgs) -> Result<DiscoveryFilters> {
@@ -428,15 +509,18 @@ fn discovery_filters(selection: &cli::SelectionArgs) -> Result<DiscoveryFilters>
     )
 }
 
-fn enforce_selected_node(override_url: Option<&str>, paid_node_url: &str) -> Result<()> {
+fn with_registry_override(mut config: Config, override_url: Option<&str>) -> Result<Config> {
     if let Some(override_url) = override_url {
-        if override_url.trim_end_matches('/') != paid_node_url.trim_end_matches('/') {
-            return Err(Error::InvalidConfig(format!(
-                "paid session belongs to {paid_node_url}, not {override_url}"
-            )));
+        let parsed = reqwest::Url::parse(override_url)
+            .map_err(|error| Error::InvalidConfig(format!("invalid registry URL: {error}")))?;
+        if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+            return Err(Error::InvalidConfig(
+                "registry URL must be an absolute HTTP(S) origin".into(),
+            ));
         }
+        config.node_url = override_url.trim_end_matches('/').to_string();
     }
-    Ok(())
+    Ok(config)
 }
 
 async fn print_status(config: Config) -> Result<()> {
@@ -488,15 +572,4 @@ async fn print_status(config: Config) -> Result<()> {
 
 fn default_wireguard_config_path(interface_name: &str) -> PathBuf {
     PathBuf::from(format!("/tmp/{interface_name}.conf"))
-}
-
-#[cfg(test)]
-mod selection_tests {
-    use super::enforce_selected_node;
-
-    #[test]
-    fn paid_session_cannot_be_migrated_to_an_override() {
-        assert!(enforce_selected_node(Some("https://node-a"), "https://node-a/").is_ok());
-        assert!(enforce_selected_node(Some("https://node-b"), "https://node-a").is_err());
-    }
 }

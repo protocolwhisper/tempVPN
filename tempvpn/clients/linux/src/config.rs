@@ -18,6 +18,7 @@ pub struct Config {
     pub mppx_rpc_url: Option<String>,
     pub proxy_addr: SocketAddr,
     pub status_file: PathBuf,
+    pub session_store_file: PathBuf,
     pub wg_quick_command: String,
     pub wg_command: String,
     pub interface_name: String,
@@ -37,6 +38,7 @@ struct FileConfig {
     mppx_rpc_url: Option<String>,
     proxy_addr: Option<SocketAddr>,
     status_file: Option<PathBuf>,
+    session_store_file: Option<PathBuf>,
     wg_quick_command: Option<String>,
     wg_command: Option<String>,
     interface_name: Option<String>,
@@ -102,6 +104,11 @@ impl Config {
                 file.status_file,
                 "/tmp/vpn-client-status.json",
             )?,
+            session_store_file: env_or_optional(
+                "VPN_CLIENT_SESSION_STORE_FILE",
+                file.session_store_file,
+            )?
+            .unwrap_or(default_session_store_file()?),
             wg_quick_command: env_or_default(
                 "VPN_CLIENT_WG_QUICK_COMMAND",
                 file.wg_quick_command,
@@ -119,6 +126,18 @@ impl Config {
                 .or(file.expected_exit_ip),
         })
     }
+}
+
+fn default_session_store_file() -> Result<PathBuf> {
+    if let Some(state) = env::var_os("XDG_STATE_HOME").filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(state).join("tempvpn/sessions.json"));
+    }
+    if let Some(home) = env::var_os("HOME").filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(home).join(".local/state/tempvpn/sessions.json"));
+    }
+    Err(Error::InvalidConfig(
+        "set VPN_CLIENT_SESSION_STORE_FILE when no user state directory is available".into(),
+    ))
 }
 
 fn env_var(name: &'static str) -> Option<String> {

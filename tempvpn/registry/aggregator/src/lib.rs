@@ -371,7 +371,11 @@ async fn create_session(
         .await
     {
         Ok(session) => {
-            let mut response = (StatusCode::CREATED, Json(session)).into_response();
+            let mut response = (
+                StatusCode::CREATED,
+                Json(portable_session_document(&session)),
+            )
+                .into_response();
             if let Ok(value) = receipt.to_header() {
                 if let Ok(header) = HeaderValue::from_str(&value) {
                     response
@@ -458,7 +462,7 @@ async fn pause_session(
 ) -> Response {
     if let Some(fixed) = &state.fixed_payments {
         return match fixed.coordinator.pause(session_id).await {
-            Ok(session) => Json(session).into_response(),
+            Ok(session) => Json(portable_session_document(&session)).into_response(),
             Err(error) => coordinator_error_response(error),
         };
     }
@@ -479,7 +483,7 @@ async fn heartbeat_session(
 ) -> Response {
     if let Some(fixed) = &state.fixed_payments {
         return match fixed.coordinator.heartbeat(session_id).await {
-            Ok(session) => Json(session).into_response(),
+            Ok(session) => Json(portable_session_document(&session)).into_response(),
             Err(error) => coordinator_error_response(error),
         };
     }
@@ -500,7 +504,7 @@ async fn session_status(
 ) -> Response {
     if let Some(fixed) = &state.fixed_payments {
         return match fixed.coordinator.status(session_id).await {
-            Ok(session) => Json(session).into_response(),
+            Ok(session) => Json(portable_session_document(&session)).into_response(),
             Err(error) => coordinator_error_response(error),
         };
     }
@@ -555,6 +559,24 @@ async fn require_eligible_node(state: &AppState, node_id: &str) -> Result<(), Re
 fn fixed_session_price(duration_seconds: u64) -> String {
     let cents = duration_seconds / 60;
     format!("{}.{:02}", cents / 100, cents % 100)
+}
+
+fn portable_session_document(session: &SessionRecord) -> Value {
+    json!({
+        "session_id": session.session_id,
+        "node_id": session.logical_node,
+        "node_url": session.node_url,
+        "state": session.state,
+        "phase": session.phase,
+        "total_seconds": session.total_seconds,
+        "remaining_seconds": session.remaining_seconds,
+        "created_at": session.created_at,
+        "connected_at": session.connected_at,
+        "last_heartbeat_at": session.last_heartbeat_at,
+        "not_after": session.grace_deadline,
+        "assigned_ip": session.assigned_ip,
+        "client_public_key": session.client_public_key,
+    })
 }
 
 fn fixed_session_fingerprint(
@@ -1267,7 +1289,11 @@ mod tests {
         let receipt =
             Receipt::from_header(paid.headers()[PAYMENT_RECEIPT_HEADER].to_str().unwrap()).unwrap();
         assert_eq!(receipt.reference, "0xpaid");
-        assert_eq!(response_json(paid).await["session_id"], "sess_portable");
+        let paid_document = response_json(paid).await;
+        assert_eq!(paid_document["session_id"], "sess_portable");
+        assert_eq!(paid_document["node_id"], "madrid");
+        assert!(paid_document.get("not_after").is_some());
+        assert!(paid_document.get("grace_deadline").is_none());
         assert_eq!(coordinator.redemptions.lock().await.len(), 1);
 
         // If the first 201 is lost, replaying the same paid request asks the
@@ -1499,6 +1525,11 @@ mod tests {
         assert!(pause.get("requestBody").is_none());
         assert!(pause["responses"]["200"].is_object());
         assert!(pause["responses"]["404"].is_object());
+        assert_eq!(
+            document["paths"]["/sessions"]["post"]["responses"]["201"]["content"]
+                ["application/json"]["schema"]["$ref"],
+            "#/components/schemas/PortableSession"
+        );
 
         for operation in [&document["paths"]["/sessions"]["post"], connect, pause] {
             assert!(operation.get("servers").is_none());
@@ -1524,6 +1555,7 @@ mod tests {
             .unwrap()
             .contains(&json!("node_id")));
         let stream_head = &document["paths"]["/sessions/stream"]["head"];
+        assert!(document["paths"]["/sessions/stream"].get("get").is_none());
         assert_eq!(stream_head["operationId"], "manageStreamingSession");
         assert!(stream_head["parameters"]
             .as_array()
@@ -1536,6 +1568,12 @@ mod tests {
         );
 
         let session = &document["components"]["schemas"]["Session"];
+        let portable = &document["components"]["schemas"]["PortableSession"];
+        assert!(portable["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("node_id")));
+        assert!(portable["properties"].get("server_public_key").is_none());
         assert!(session["properties"]["client_public_key"]["type"]
             .as_array()
             .unwrap()

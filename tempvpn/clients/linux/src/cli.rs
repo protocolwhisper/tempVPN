@@ -106,6 +106,14 @@ pub struct ConfigArgs {
 
 #[derive(Debug, Clone, Default, Args)]
 pub struct SelectionArgs {
+    /// Registry control-plane origin for discovery, payment, and lifecycle calls.
+    #[arg(long)]
+    pub registry_url: Option<String>,
+
+    /// Select this exact live catalog node by ID.
+    #[arg(long, conflicts_with = "node_url")]
+    pub node_id: Option<String>,
+
     /// Only consider nodes advertising this ISO 3166-1 alpha-2 country code.
     #[arg(long)]
     pub country: Option<String>,
@@ -118,8 +126,8 @@ pub struct SelectionArgs {
     #[arg(long)]
     pub region: Option<String>,
 
-    /// Use this node directly, bypassing registry discovery.
-    #[arg(long)]
+    /// Select the live catalog node advertising this diagnostic API URL.
+    #[arg(long, conflicts_with = "node_id")]
     pub node_url: Option<String>,
 
     /// Policy used to rank eligible nodes from this device.

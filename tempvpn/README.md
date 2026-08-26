@@ -12,13 +12,11 @@ Rust client, and Rust VPN-node/registry daemon used by tempVPN. Start with the r
 ## Architecture
 
 ```text
-Node daemons --authenticated leases--> Registry-mode daemon
-Linux/macOS clients <-- GET /nodes -----------|
-       |
-       +-- MPP payment and VPN session go directly to selected node
-
-Fixed-session node generations --mTLS--> Persistent session coordinator
-                                      `-- SQLite durable authority
+Node generations --mTLS--> persistent coordinator (durable entitlement truth)
+Node catalogs ---------> global registry <--------- Linux/macOS clients
+                               |
+                               +-- fixed MPP payment and lifecycle origin
+                               `-- node-affine proxy for Session v2 streaming
 ```
 
 ## Components
@@ -45,8 +43,10 @@ The local Rust executable, built as `vpn-client`.
 | `config` | Generates a WireGuard configuration without bringing up the tunnel. This is a development/manual path. |
 | `run` | Starts WireGuard plus a loopback-only SOCKS5 proxy, runs one child command with proxy variables, and cleans up afterward. This is not the default macOS skill flow. |
 
-The agent passes `--session-response`, `--private-key-path`, and the exact
-selected `--node-url`, keeping MPP payment and local tunnel control explicit.
+The agent passes the registry URL and selected `node_id`. New paid responses
+are imported into an owner-only capability store before activation; later
+connections automatically reuse sufficient paused balance through any eligible
+node instead of paying again.
 
 ### `node/linux`
 
@@ -58,11 +58,11 @@ The Linux server component. It exposes:
 | `GET /nodes` | Public catalog with optional `country`, `city`, `region`, and `available` filters. |
 | `PUT /registry/nodes/:id` | Authenticated node lease registration or refresh. |
 | `DELETE /registry/nodes/:id` | Authenticated graceful lease removal. |
-| `POST /sessions` | MPP-protected endpoint that creates a paid connected-time balance. |
-| `POST /sessions/:id/connect` | Activates a paid balance, adds or refreshes the WireGuard peer, and starts consuming time. |
-| `POST /sessions/:id/pause` | Pauses a paid balance, removes the WireGuard peer, and stops consuming time. |
-| `POST /sessions/:id/heartbeat` | Updates connected-time accounting for active sessions. |
-| `GET /sessions/:id/status` | Public paid-session status lookup for remaining seconds and grace deadline. |
+| `POST /sessions` | Rollout-only node-local fixed purchase; after cutover returns a non-payable 421 naming the registry. |
+| `POST /sessions/:id/connect` | Registry-authenticated data-plane activation that adds or refreshes the WireGuard peer. |
+| `POST /sessions/:id/pause` | Registry-authenticated peer removal during rollout compatibility. |
+| `POST /sessions/:id/heartbeat` | Registry-authenticated compatibility route; public lifecycle uses the registry. |
+| `GET /sessions/:id/status` | Registry-authenticated compatibility route; public status uses the registry. |
 | `POST /sessions/stream` | Creates or resumes a Tempo TIP-1034 Session v2 authenticated SSE control stream for metered access. |
 | `HEAD /sessions/stream` | Session v2 open, voucher, top-up, and close management operations. |
 | `GET /sessions/:id` | Administrative session lookup; not used by the skill. |
@@ -74,9 +74,10 @@ capped exponential backoff. The daemon allocates tunnel IP addresses, invokes `w
 connected-time balance, and removes expired peers during periodic cleanup. Its
 admin token belongs only on the server/operator side.
 
-In `fixed_session_mode = "coordinator"`, the daemon remains the public client
-API but delegates fixed purchases and lifecycle mutations to the standalone
-coordinator. It reconciles only its coordinator-managed WireGuard peers. See
+In `fixed_session_mode = "coordinator"`, the daemon is the authenticated data
+plane and delegates fixed activation state to the standalone coordinator. The
+registry owns public purchase and lifecycle requests, while each node reconciles
+only its coordinator-managed WireGuard peers. See
 [`registry/coordinator/README.md`](registry/coordinator/README.md) for service
 configuration, mTLS roles, promotion, drain safety, and rollback limits.
 
@@ -126,8 +127,8 @@ notarization ticket, then offers the verified package through macOS Installer.
 See [`clients/macos/README.md`](clients/macos/README.md) for the maintainer
 release command.
 
-Select before paying. The selected node URL must be used for both MPP payment
-and session import:
+Select before paying. The selected node URL is used only for read-only health
+and latency checks; payment and session import stay at the registry origin:
 
 ```bash
 ./target/debug/vpn-client select --country DE --selection-policy lowest-latency --json
@@ -168,11 +169,11 @@ generation ID, root CA, certificate, and private-key paths shown in
 not the public registry endpoint. The coordinator is a separate process and is
 the only SQLite owner; node daemons do not mount or open its database.
 
-A paid entitlement belongs to the stable logical-node URL. An active tunnel
-stays pinned to its current generation. After it pauses, it can resume through
-the accepting generation with the same remaining balance and tunnel IP but a
-fresh server WireGuard key and endpoint. Clients build the tunnel from each
-connect response. Retryable `409` transitions mean peer reconciliation is still
+A paid entitlement is a registry-issued portable capability. An active tunnel
+stays pinned to its current node generation. After it pauses, it can resume
+through another eligible logical node with the same remaining balance but
+potentially a fresh assigned IP, server WireGuard key, endpoint, and node URL.
+Clients build the tunnel from each connect response. Retryable `409` transitions mean peer reconciliation is still
 in progress; retryable `503` responses mean the coordinator could not confirm a
 durable mutation. Never fall back to process memory after either response.
 
@@ -234,7 +235,7 @@ traffic is accepted. Keep the close key in a secret manager or environment
 injection, never in source control or logs.
 
 To roll back streaming, set `mpp_streaming_enabled = false` and restart. The
-streaming route will not be registered and `POST /sessions` continues to work.
+fixed registry control plane continues to work independently.
 Retain the SQLite database even after rollback so accepted voucher and replay
 state remain available for settlement or a later restart.
 

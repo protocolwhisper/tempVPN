@@ -56,16 +56,6 @@ func catalogURL(baseURL: String, filters: DiscoveryFilters) throws -> URL {
     return url
 }
 
-func enforceSelectedNode(selectedNodeURL: String?, paidNodeURL: String) throws -> String {
-    let paid = try normalizedNodeURL(paidNodeURL)
-    if let selectedNodeURL, try normalizedNodeURL(selectedNodeURL) != paid {
-        throw TempVPNCLIError.invalidResponse(
-            "the paid session belongs to \(paid), not \(selectedNodeURL)"
-        )
-    }
-    return paid
-}
-
 func readInput(_ path: String) throws -> Data {
     if path == "-" { return FileHandle.standardInput.readDataToEndOfFile() }
     return try Data(contentsOf: URL(fileURLWithPath: path))

@@ -32,14 +32,15 @@ export VPN_CLIENT_REGISTRY_URL="https://registry.example.com"
 tempvpnctl select --country DE --selection-policy lowest-latency --json
 tempvpnctl check --node-url "$SELECTED_NODE_URL" --json
 
-mppx "$SELECTED_NODE_URL/sessions" \
+mppx "$VPN_CLIENT_REGISTRY_URL/sessions" \
   --account main \
-  --json-body '{"duration_seconds":1800}' \
+  --json-body "{\"node_id\":\"$SELECTED_NODE_ID\",\"duration_seconds\":1800}" \
   --silent > /tmp/tempvpn-session.json
 
 tempvpnctl connect \
   --session-response /tmp/tempvpn-session.json \
-  --node-url "$SELECTED_NODE_URL" \
+  --registry-url "$VPN_CLIENT_REGISTRY_URL" \
+  --node-id "$SELECTED_NODE_ID" \
   --node-name "$SELECTED_NODE_NAME" \
   --country-code "$SELECTED_COUNTRY_CODE" \
   --city "$SELECTED_CITY" \
@@ -51,16 +52,17 @@ tempvpnctl disconnect --json
 ```
 
 `tempvpnctl` generates an X25519/WireGuard key, stores the private key in the
-shared Keychain access group, and sends only the public key to the selected
-node. The Packet Tunnel extension retrieves the private key internally, starts
+shared Keychain access group, and sends only the public key through the registry.
+The Packet Tunnel extension retrieves the private key internally, starts
 WireGuardKit, heartbeats the paid session every 30 seconds, and pauses unused
 time when the tunnel stops.
 
-Payment stays outside the client. The agent must pay the exact selected node
-with an already configured `mppx` account and pass that node's JSON response to
-`tempvpnctl`. The CLI rejects a response bound to a different node. Omit absent
-optional location arguments. The live `check` must run immediately before
-`mppx`; advertised capacity is a snapshot and does not reserve a slot.
+Payment stays outside the client. The agent pays the registry with an already
+configured `mppx` account, naming the selected `node_id`, then passes that JSON
+response to `tempvpnctl`. A paused balance can reconnect through another live
+node ID; node URLs are diagnostic metadata. Omit absent optional location
+arguments. The registry rechecks eligibility before issuing its payment
+challenge; advertised capacity remains a snapshot rather than a reservation.
 
 Natural-language parsing does not run in the indexer. The agent converts a
 request such as “Connect 30 mins to Germany” into duration `1800`, country `DE`,

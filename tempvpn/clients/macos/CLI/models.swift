@@ -113,9 +113,10 @@ struct NodeHealth: Codable, Equatable {
     }
 }
 
-struct PaidSession: Codable {
+struct PaidSession: Decodable {
     let sessionId: String
-    let nodeURL: String
+    let nodeURL: String?
+    let logicalNode: String?
     let notAfter: String?
     let remainingSeconds: Int?
     let state: String?
@@ -123,9 +124,62 @@ struct PaidSession: Codable {
     enum CodingKeys: String, CodingKey {
         case sessionId = "session_id"
         case nodeURL = "node_url"
+        case logicalNode = "logical_node"
         case notAfter = "not_after"
+        case graceDeadline = "grace_deadline"
         case remainingSeconds = "remaining_seconds"
         case state
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        sessionId = try values.decode(String.self, forKey: .sessionId)
+        nodeURL = try values.decodeIfPresent(String.self, forKey: .nodeURL)
+        logicalNode = try values.decodeIfPresent(String.self, forKey: .logicalNode)
+        notAfter = try values.decodeIfPresent(String.self, forKey: .notAfter)
+            ?? values.decodeIfPresent(String.self, forKey: .graceDeadline)
+        remainingSeconds = try values.decodeIfPresent(Int.self, forKey: .remainingSeconds)
+        state = try values.decodeIfPresent(String.self, forKey: .state)
+    }
+
+    init(
+        sessionId: String,
+        nodeURL: String?,
+        logicalNode: String?,
+        notAfter: String?,
+        remainingSeconds: Int?,
+        state: String?
+    ) {
+        self.sessionId = sessionId
+        self.nodeURL = nodeURL
+        self.logicalNode = logicalNode
+        self.notAfter = notAfter
+        self.remainingSeconds = remainingSeconds
+        self.state = state
+    }
+}
+
+struct PortableSession: Decodable {
+    let sessionId: String
+    let remainingSeconds: Int
+    let notAfter: String
+    let state: String
+
+    enum CodingKeys: String, CodingKey {
+        case sessionId = "session_id"
+        case remainingSeconds = "remaining_seconds"
+        case notAfter = "not_after"
+        case graceDeadline = "grace_deadline"
+        case state
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        sessionId = try values.decode(String.self, forKey: .sessionId)
+        remainingSeconds = try values.decode(Int.self, forKey: .remainingSeconds)
+        state = try values.decode(String.self, forKey: .state)
+        notAfter = try values.decodeIfPresent(String.self, forKey: .notAfter)
+            ?? values.decode(String.self, forKey: .graceDeadline)
     }
 }
 

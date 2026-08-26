@@ -19,3 +19,19 @@ The registry is the public control-plane origin for discovery, payment, and life
 `POST /sessions` creates a paid but paused fixed-duration balance. Fixed access costs $0.01 per minute: requested duration uses seconds and must be a positive multiple of 60 (`$0.01 × (duration_seconds / 60)`). The runtime MPP 402 challenge is authoritative for payment details. Clients must then call `POST /sessions/{session_id}/connect` with a selected `node_id` and locally generated WireGuard public key. They should call `POST /sessions/{session_id}/pause` when disconnecting so connected-time consumption stops while unused balance remains portable to another available node.
 
 After deploying an OpenAPI change, update the separately maintained MPP directory entry with the same methods and paths, reindex it, and verify the directory copy includes status, connect, pause, and heartbeat. The separately maintained website docs must mirror this registry-first workflow. Streaming remains a separate, non-portable metered product.
+
+## Fixed-payment configuration
+
+Set `REGISTRY_FIXED_PAYMENT_ENABLED=true` only after the coordinator migration
+and node control secret are deployed. The registry then requires:
+
+- `REGISTRY_MPP_REALM` (production: `registry.tempvpn.xyz`), currency,
+  recipient, RPC URL, and chain ID;
+- `REGISTRY_COORDINATOR_URL` plus the root CA, client certificate, and private
+  key paths for its least-privilege mTLS identity;
+- `REGISTRY_NODE_CONTROL_TOKEN`, shared only with node data planes for internal
+  fixed-session activation.
+
+Optional `REGISTRY_MAX_DURATION_SECONDS` and `REGISTRY_GRACE_PERIOD_SECONDS`
+default to 3600 and 604800. Never reuse the node admin token as the registry
+control token.

@@ -97,7 +97,7 @@
             },
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/Session" },
+                "schema": { "$ref": "#/components/schemas/PortableSession" },
                 "examples": {
                   "paused": { "$ref": "#/components/examples/PausedSession" }
                 }
@@ -162,7 +162,7 @@
             "description": "Session paused; remaining_seconds is preserved.",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/Session" },
+                "schema": { "$ref": "#/components/schemas/PortableSession" },
                 "examples": {
                   "paused": { "$ref": "#/components/examples/PausedSession" }
                 }
@@ -190,7 +190,7 @@
             "description": "Refreshed session state.",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/Session" }
+                "schema": { "$ref": "#/components/schemas/PortableSession" }
               }
             }
           },
@@ -214,7 +214,7 @@
             "description": "Current session state.",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/Session" }
+                "schema": { "$ref": "#/components/schemas/PortableSession" }
               }
             }
           },
@@ -380,6 +380,45 @@
           "lease_expires_at": { "type": "string", "format": "date-time" }
         }
       },
+      "PortableSession": {
+        "type": "object",
+        "required": [
+          "session_id",
+          "node_id",
+          "node_url",
+          "client_public_key",
+          "assigned_ip",
+          "created_at",
+          "connected_at",
+          "last_heartbeat_at",
+          "not_after",
+          "total_seconds",
+          "remaining_seconds",
+          "state"
+        ],
+        "properties": {
+          "session_id": { "type": "string", "pattern": "^sess_[A-Za-z0-9]+$" },
+          "node_id": {
+            "type": "string",
+            "description": "Last selected logical node. A paused capability may connect through another available node_id."
+          },
+          "node_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "Last selected node metadata; the registry remains the lifecycle origin."
+          },
+          "client_public_key": { "type": ["string", "null"] },
+          "assigned_ip": { "type": ["string", "null"] },
+          "phase": { "type": ["string", "null"] },
+          "created_at": { "type": "string", "format": "date-time" },
+          "connected_at": { "type": ["string", "null"], "format": "date-time" },
+          "last_heartbeat_at": { "type": ["string", "null"], "format": "date-time" },
+          "not_after": { "type": "string", "format": "date-time" },
+          "total_seconds": { "type": "integer", "format": "uint64", "minimum": 1 },
+          "remaining_seconds": { "type": "integer", "format": "uint64", "minimum": 0 },
+          "state": { "type": "string", "enum": ["paused", "active", "expired"] }
+        }
+      },
       "Session": {
         "type": "object",
         "required": [
@@ -523,12 +562,11 @@
       "PausedSession": {
         "value": {
           "session_id": "sess_0123456789abcdef0123456789abcdef",
+          "node_id": "madrid",
           "node_url": "https://madrid.tempvpn.xyz",
           "client_public_key": null,
           "assigned_ip": null,
-          "server_public_key": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg=",
-          "endpoint": "madrid.tempvpn.xyz:51820",
-          "expected_exit_ip": "34.0.195.239",
+          "phase": null,
           "created_at": "2026-08-25T10:00:00Z",
           "connected_at": null,
           "last_heartbeat_at": null,

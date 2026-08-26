@@ -34,6 +34,14 @@ Treat the registry Markdown and OpenAPI documents as authoritative when the
 website prose lags a deployment. Do not infer node-direct payment routing from
 an older copy of the human docs.
 
+Before the first purchase or connection in a workflow, fetch
+`/docs/markdown` and `/openapi.json` from the chosen registry and confirm they
+still advertise registry-owned fixed `POST /sessions`, connect, status,
+heartbeat, and pause with positive 60-second multiples. If the live contract
+conflicts with this installed skill, stop before payment, explain the mismatch,
+and offer to compare this bundle with its canonical `main` source. A docs check
+is read-only and does not authorize a skill update.
+
 Do not silently replace this skill during setup, connection, or payment. When
 the user asks to install, update, or check for updates, compare the installed
 bundle with the canonical `main` bundle, explain whether it differs, and obtain
@@ -458,8 +466,10 @@ sudo vpn-client connect \
   --private-key-path PRIVATE_KEY_PATH
 ```
 
-For a reused session, use the client's saved-session option instead of
-`--session-response`. Never reconstruct a paid response from remembered fields.
+Without `--session-response`, the Linux client checks its owner-only capability
+store through registry status and automatically reuses a paused balance with at
+least the requested duration. Never reconstruct a paid response from remembered
+fields.
 
 ### macOS
 
@@ -475,6 +485,17 @@ tempvpnctl connect \
   --country-code "$SELECTED_COUNTRY_CODE" \
   --city "$SELECTED_CITY" \
   --region "$SELECTED_REGION" \
+  --json
+```
+
+For a saved macOS balance, omit `--session-response` and use an integer minute
+requirement; the CLI resolves the capability from its private local store:
+
+```bash
+tempvpnctl connect \
+  --registry-url "$REGISTRY_URL" \
+  --node-id "$SELECTED_NODE_ID" \
+  --resume-minutes 30 \
   --json
 ```
 

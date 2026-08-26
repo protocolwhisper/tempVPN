@@ -151,34 +151,46 @@ func checkNodeAvailability(
     try validateNodeHealthForPayment(try await fetchNodeHealth(apiURL: apiURL, session: session))
 }
 
-func connectSession(_ paid: PaidSession, publicKey: String) async throws -> NodeSession {
+func connectSession(
+    _ paid: PaidSession,
+    registryURL: String,
+    nodeId: String,
+    publicKey: String
+) async throws -> NodeSession {
     let url = try endpointURL(
-        baseURL: paid.nodeURL,
+        baseURL: registryURL,
         pathComponents: ["sessions", paid.sessionId, "connect"]
     )
-    let body = try JSONSerialization.data(withJSONObject: ["client_public_key": publicKey])
+    let body = try connectRequestBody(nodeId: nodeId, publicKey: publicKey)
     return try await sendJSON(url: url, method: "POST", body: body)
 }
 
-func heartbeatSession(nodeURL: String, sessionId: String) async throws -> NodeSession {
+func connectRequestBody(nodeId: String, publicKey: String) throws -> Data {
+    try JSONSerialization.data(withJSONObject: [
+        "node_id": nodeId,
+        "client_public_key": publicKey,
+    ])
+}
+
+func heartbeatSession(registryURL: String, sessionId: String) async throws -> PortableSession {
     let url = try endpointURL(
-        baseURL: nodeURL,
+        baseURL: registryURL,
         pathComponents: ["sessions", sessionId, "heartbeat"]
     )
     return try await sendJSON(url: url, method: "POST", body: Data("{}".utf8))
 }
 
-func pauseSession(nodeURL: String, sessionId: String) async throws -> NodeSession {
+func pauseSession(registryURL: String, sessionId: String) async throws -> PortableSession {
     let url = try endpointURL(
-        baseURL: nodeURL,
+        baseURL: registryURL,
         pathComponents: ["sessions", sessionId, "pause"]
     )
     return try await sendJSON(url: url, method: "POST", body: Data("{}".utf8))
 }
 
-func fetchSession(nodeURL: String, sessionId: String) async throws -> NodeSession {
+func fetchSession(registryURL: String, sessionId: String) async throws -> PortableSession {
     let url = try endpointURL(
-        baseURL: nodeURL,
+        baseURL: registryURL,
         pathComponents: ["sessions", sessionId, "status"]
     )
     return try await sendJSON(url: url, method: "GET", body: nil)

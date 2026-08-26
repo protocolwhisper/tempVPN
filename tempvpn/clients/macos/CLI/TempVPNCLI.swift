@@ -93,24 +93,61 @@ struct TempVPNCLI {
 
     private static func connect(arguments: [String], json: Bool) async throws {
         guard headlessAppIsInstalled() else { throw TempVPNCLIError.hostAppNotInstalled }
-        guard let responsePath = try option("--session-response", in: arguments) else {
-            throw TempVPNCLIError.usage("--session-response <path|-> is required.\n\n\(usage)")
+        guard let rawRegistryURL = try option("--registry-url", in: arguments)
+            ?? ProcessInfo.processInfo.environment["VPN_CLIENT_REGISTRY_URL"] else {
+            throw TempVPNCLIError.usage(
+                "Set --registry-url or VPN_CLIENT_REGISTRY_URL before connecting."
+            )
         }
-
-        let paid = try JSONDecoder().decode(PaidSession.self, from: readInput(responsePath))
-        let paidNodeURL = try enforceSelectedNode(
-            selectedNodeURL: try option("--node-url", in: arguments),
-            paidNodeURL: paid.nodeURL
-        )
+        let registryURL = try normalizedNodeURL(rawRegistryURL)
+        let responsePath = try option("--session-response", in: arguments)
+        let resumeMinutes = try option("--resume-minutes", in: arguments)
+        guard (responsePath == nil) != (resumeMinutes == nil) else {
+            throw TempVPNCLIError.usage(
+                "Pass exactly one of --session-response <path|-> or --resume-minutes <whole-minutes>."
+            )
+        }
+        let paid: PaidSession
+        if let responsePath {
+            paid = try JSONDecoder().decode(PaidSession.self, from: readInput(responsePath))
+            // Persist the bearer capability before activation so a node or
+            // tunnel failure cannot turn a successful payment into lost access.
+            try saveCapability(paid, registryURL: registryURL)
+        } else {
+            guard let rawMinutes = resumeMinutes,
+                  let minutes = Int(rawMinutes), minutes > 0 else {
+                throw TempVPNCLIError.usage("--resume-minutes must be a positive whole number.")
+            }
+            guard let saved = try await reusableCapability(
+                registryURL: registryURL,
+                requiredSeconds: minutes * 60
+            ) else {
+                throw TempVPNCLIError.invalidResponse(
+                    "no saved paused balance has enough remaining whole minutes"
+                )
+            }
+            paid = saved
+        }
+        guard let nodeId = try option("--node-id", in: arguments) ?? paid.logicalNode else {
+            throw TempVPNCLIError.usage(
+                "Pass --node-id from `tempvpnctl select` when the paid response has no logical_node."
+            )
+        }
 
         let publicKey = try loadOrCreateWireGuardPublicKey(sessionId: paid.sessionId)
-        let active = try await connectSession(paid, publicKey: publicKey)
-        guard try normalizedNodeURL(active.nodeURL) == paidNodeURL else {
-            _ = try? await pauseSession(nodeURL: paidNodeURL, sessionId: paid.sessionId)
-            throw TempVPNCLIError.invalidResponse("the node returned a session owned by another node")
-        }
+        let active = try await connectSession(
+            paid,
+            registryURL: registryURL,
+            nodeId: nodeId,
+            publicKey: publicKey
+        )
         guard let assignedIP = active.assignedIP, !assignedIP.isEmpty else {
-            _ = try? await pauseSession(nodeURL: paidNodeURL, sessionId: paid.sessionId)
+            if let paused = try? await pauseSession(
+                registryURL: registryURL,
+                sessionId: paid.sessionId
+            ) {
+                try? updateCapability(paused, registryURL: registryURL)
+            }
             throw TempVPNCLIError.invalidResponse("the node did not assign a tunnel IP")
         }
 
@@ -124,7 +161,7 @@ struct TempVPNCLI {
             TempVPNProviderKey.tunnelName: tempVPNTunnelName,
             TempVPNProviderKey.wgQuickConfig: wgQuick,
             TempVPNProviderKey.sessionId: active.sessionId,
-            TempVPNProviderKey.nodeURL: paidNodeURL,
+            TempVPNProviderKey.nodeURL: registryURL,
             TempVPNProviderKey.remainingSeconds: active.remainingSeconds,
             TempVPNProviderKey.notAfter: active.notAfter,
             TempVPNProviderKey.assignedIP: assignedIP,
@@ -148,14 +185,21 @@ struct TempVPNCLI {
         do {
             try await installAndStartTunnel(configuration: configuration)
         } catch {
-            _ = try? await pauseSession(nodeURL: paidNodeURL, sessionId: paid.sessionId)
+            if let paused = try? await pauseSession(
+                registryURL: registryURL,
+                sessionId: paid.sessionId
+            ) {
+                try? updateCapability(paused, registryURL: registryURL)
+            }
             throw error
         }
 
         try emit([
             "status": "connected",
             "session_id": active.sessionId,
-            "node_url": paidNodeURL,
+            "registry_url": registryURL,
+            "node_url": active.nodeURL,
+            "node_id": nodeId,
             "profile": tempVPNTunnelName,
             "assigned_ip": assignedIP,
             "endpoint": active.endpoint,
@@ -176,7 +220,7 @@ struct TempVPNCLI {
               let nodeURL = configuration[TempVPNProviderKey.nodeURL] as? String else {
             throw TempVPNCLIError.invalidTunnelConfiguration
         }
-        let server = try? await fetchSession(nodeURL: nodeURL, sessionId: sessionId)
+        let server = try? await fetchSession(registryURL: nodeURL, sessionId: sessionId)
         let remainingSeconds = server?.remainingSeconds
             ?? configuration[TempVPNProviderKey.remainingSeconds] as? Int
             ?? 0
@@ -214,7 +258,8 @@ struct TempVPNCLI {
         }
         // The Packet Tunnel pauses during stop. Repeat idempotently so a crash
         // in the extension cannot continue consuming connected-time balance.
-        let paused = try await pauseSession(nodeURL: nodeURL, sessionId: sessionId)
+        let paused = try await pauseSession(registryURL: nodeURL, sessionId: sessionId)
+        try updateCapability(paused, registryURL: nodeURL)
         try emit([
             "status": paused.state == "expired" ? "expired" : "paused",
             "session_id": paused.sessionId,
@@ -229,7 +274,8 @@ struct TempVPNCLI {
                         [--region <region>] [--selection-policy lowest-latency]
                         [--node-url <url>] [--json]
       tempvpnctl check --node-url <selected-url> [--json]
-      tempvpnctl connect --session-response <path|-> --node-url <selected-url>
+      tempvpnctl connect (--session-response <path|-> | --resume-minutes <minutes>)
+                         --registry-url <url> --node-id <id>
                          [--node-name <name>] [--country-code <ISO-2>]
                          [--subdivision-code <code>] [--city <city>]
                          [--region <region>] [--json]
@@ -237,9 +283,10 @@ struct TempVPNCLI {
       tempvpnctl disconnect [--json]
       tempvpnctl --version
 
-    Payment is separate: select a node, pay that exact node's POST /sessions with
-    mppx, then pass the paid JSON response to `tempvpnctl connect`. Run `check`
-    immediately before mppx so a draining or full node fails before payment.
+    Payment is separate: select a node, then pay the registry's POST /sessions with
+    that node_id and a whole-minute duration. Pass the paid JSON response, registry
+    URL, and any currently eligible node_id to `tempvpnctl connect`; paused balance
+    is portable across nodes and private keys stay in the local Keychain.
     """
 }
 

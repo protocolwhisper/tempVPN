@@ -12,10 +12,10 @@ verifies the public IP.
 ## How it works
 
 ```text
-Node daemons --authenticated leases--> registry-mode daemon
-Clients fetch /nodes, filter and latency-rank healthy nodes
-Agent pays the selected node's POST /sessions directly with mppx
-Linux vpn-client or macOS tempvpnctl imports that node-bound response
+Node daemons --authenticated state/leases--> durable coordinator and catalogs
+Registry merges /nodes and owns fixed MPP challenges plus lifecycle state
+Clients latency-rank healthy nodes, then pay POST /sessions at the registry
+Linux vpn-client or macOS tempvpnctl activates portable balance by node_id
 ```
 
 Only the WireGuard public key is sent when activating the paid balance. The
@@ -36,12 +36,12 @@ connected time is exhausted or the grace deadline passes.
    Select a healthy node, import the paid response, retain private keys locally,
    start the tunnel, heartbeat usage, and pause unused time on disconnect.
 
-3. **The VPN node and registry** (`vpn-node-daemon`)
+3. **The VPN node, registry, and coordinator**
 
-   Runs on the remote server. It validates the Tempo MPP payment, creates a
-   paid usage balance, activates temporary WireGuard peers, and removes peers
-   automatically when purchased connected time expires. Optional registry mode
-   maintains authenticated 90-second node leases without proxying payments.
+   The registry validates fixed Tempo MPP payments and the coordinator stores
+   portable balances durably. Nodes advertise live capacity, activate temporary
+   WireGuard peers after authenticated registry routing, reconcile peer state,
+   and continue to own the separate node-affine Session v2 streaming product.
 
 See [tempvpn/README.md](tempvpn/README.md) for implementation and server details.
 

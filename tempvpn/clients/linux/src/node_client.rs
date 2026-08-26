@@ -113,18 +113,22 @@ struct HealthResponse {
 
 #[derive(Debug, Serialize)]
 struct CreateSessionRequest {
+    node_id: String,
     duration_seconds: u64,
 }
 
 #[derive(Debug, Serialize)]
 struct ConnectSessionRequest<'a> {
+    node_id: &'a str,
     client_public_key: &'a str,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CreatedSession {
     pub session_id: String,
-    pub node_url: String,
+    #[serde(default)]
+    pub node_url: Option<String>,
+    #[serde(alias = "grace_deadline")]
     pub not_after: DateTime<Utc>,
     pub total_seconds: u64,
     pub remaining_seconds: u64,
@@ -196,12 +200,27 @@ impl NodeClient {
     pub async fn select(
         config: &Config,
         filters: &DiscoveryFilters,
+        node_id: Option<&str>,
         node_url: Option<&str>,
     ) -> Result<Self> {
-        if let Some(node_url) = node_url {
-            let node = Self::for_base_url(node_url.to_string(), config);
-            median_health_rtt(&node.http, node.base_url()).await?;
-            return Ok(node);
+        if node_id.is_some() || node_url.is_some() {
+            let directory = Self::new(config);
+            let nodes = directory.nodes(filters).await?;
+            let node = nodes
+                .into_iter()
+                .find(|node| {
+                    node_id.is_some_and(|wanted| node.id == wanted)
+                        || node_url.is_some_and(|wanted| {
+                            node.api_url.trim_end_matches('/') == wanted.trim_end_matches('/')
+                        })
+                })
+                .ok_or_else(|| {
+                    Error::InvalidConfig(format!(
+                        "selected node is not in the eligible registry catalog"
+                    ))
+                })?;
+            median_health_rtt(&directory.http, &node.api_url).await?;
+            return Ok(Self::for_selected_node(node, config));
         }
 
         let directory = Self::new(config);
@@ -244,7 +263,7 @@ impl NodeClient {
     }
 
     fn for_selected_node(node: Node, config: &Config) -> Self {
-        let mut client = Self::for_base_url(node.api_url.clone(), config);
+        let mut client = Self::for_base_url(config.node_url.clone(), config);
         client.selected_node = Some(node);
         client
     }
@@ -271,9 +290,17 @@ impl NodeClient {
     }
 
     pub async fn create_session(&self, duration_seconds: u64) -> Result<CreatedSession> {
-        self.ensure_available(self.selected_node.is_some()).await?;
+        let node_id = self
+            .selected_node
+            .as_ref()
+            .ok_or_else(|| Error::InvalidConfig("select a registry node before purchase".into()))?
+            .id
+            .clone();
         let url = format!("{}/sessions", self.base_url);
-        let body = serde_json::to_string(&CreateSessionRequest { duration_seconds })?;
+        let body = serde_json::to_string(&CreateSessionRequest {
+            node_id,
+            duration_seconds,
+        })?;
 
         let mut command = Command::new(&self.mppx_command);
         command
@@ -319,11 +346,18 @@ impl NodeClient {
     }
 
     pub async fn connect_session(&self, session_id: &str, public_key: &str) -> Result<Session> {
+        let node_id = self
+            .selected_node
+            .as_ref()
+            .ok_or_else(|| Error::InvalidConfig("select a registry node before connect".into()))?
+            .id
+            .as_str();
         let url = format!("{}/sessions/{session_id}/connect", self.base_url);
         let response = self
             .http
             .post(url)
             .json(&ConnectSessionRequest {
+                node_id,
                 client_public_key: public_key,
             })
             .send()
@@ -333,15 +367,21 @@ impl NodeClient {
         session.try_into()
     }
 
-    pub async fn pause_session(&self, session_id: &str) -> Result<()> {
+    pub async fn pause_session(&self, session_id: &str) -> Result<CreatedSession> {
         let url = format!("{}/sessions/{session_id}/pause", self.base_url);
-        self.http.post(url).send().await?.error_for_status()?;
-        Ok(())
+        let response = self.http.post(url).send().await?.error_for_status()?;
+        Ok(response.json::<CreatedSession>().await?)
     }
 
     pub async fn heartbeat(&self, session_id: &str) -> Result<CreatedSession> {
         let url = format!("{}/sessions/{session_id}/heartbeat", self.base_url);
         let response = self.http.post(url).send().await?.error_for_status()?;
+        Ok(response.json::<CreatedSession>().await?)
+    }
+
+    pub async fn session_status(&self, session_id: &str) -> Result<CreatedSession> {
+        let url = format!("{}/sessions/{session_id}/status", self.base_url);
+        let response = self.http.get(url).send().await?.error_for_status()?;
         Ok(response.json::<CreatedSession>().await?)
     }
 
@@ -499,6 +539,7 @@ mod tests {
             mppx_rpc_url: None,
             proxy_addr: "127.0.0.1:1080".parse::<SocketAddr>().unwrap(),
             status_file: PathBuf::from("/tmp/test-tempvpn-status.json"),
+            session_store_file: PathBuf::from("/tmp/test-tempvpn-sessions.json"),
             wg_quick_command: "wg-quick".into(),
             wg_command: "wg".into(),
             interface_name: "testwg0".into(),
@@ -611,7 +652,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn final_unavailable_check_stops_before_mppx() {
+    async fn registry_owns_final_capacity_check_before_payment() {
         let url = health_server(
             r#"{"status":"ok","accepting_sessions":false,"available_slots":3}"#,
             std::time::Duration::ZERO,
@@ -624,6 +665,17 @@ mod tests {
         let client = NodeClient::for_selected_node(selected, &config);
 
         let error = client.create_session(60).await.unwrap_err();
-        assert!(matches!(error, Error::NodeUnavailable));
+        assert!(matches!(error, Error::Io(_)));
+    }
+
+    #[test]
+    fn portable_session_accepts_coordinator_deadline_and_missing_node_url() {
+        let session: CreatedSession = serde_json::from_str(
+            r#"{"session_id":"sess_portable","logical_node":"madrid","state":"paused","total_seconds":120,"remaining_seconds":120,"grace_deadline":"2030-01-01T00:00:00Z"}"#,
+        )
+        .unwrap();
+        assert_eq!(session.session_id, "sess_portable");
+        assert!(session.node_url.is_none());
+        assert_eq!(session.total_seconds, 120);
     }
 }

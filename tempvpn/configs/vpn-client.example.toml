@@ -10,6 +10,9 @@ mppx_command = "mppx"
 # mppx_rpc_url = "https://rpc.moderato.tempo.xyz"
 proxy_addr = "127.0.0.1:1080"
 status_file = "/tmp/vpn-client-status.json"
+# Put this on owner-only persistent storage. The client writes mode 0600 and
+# uses it to avoid paying again when a paused portable balance is sufficient.
+# session_store_file = "/home/example/.local/state/tempvpn/sessions.json"
 wg_quick_command = "wg-quick"
 wg_command = "wg"
 interface_name = "vpnclient0"

@@ -71,11 +71,13 @@ final class TempVPNCLITests: XCTestCase {
     }
 
     func testPaidSessionUsesServerWireNames() throws {
-        let data = Data(#"{"session_id":"sess_123","node_url":"https://node.example/","remaining_seconds":1800,"state":"paused"}"#.utf8)
+        let data = Data(#"{"session_id":"sess_123","logical_node":"madrid","grace_deadline":"2030-01-01T00:00:00Z","remaining_seconds":1800,"state":"paused"}"#.utf8)
         let session = try JSONDecoder().decode(PaidSession.self, from: data)
 
         XCTAssertEqual(session.sessionId, "sess_123")
-        XCTAssertEqual(session.nodeURL, "https://node.example/")
+        XCTAssertNil(session.nodeURL)
+        XCTAssertEqual(session.logicalNode, "madrid")
+        XCTAssertEqual(session.notAfter, "2030-01-01T00:00:00Z")
         XCTAssertEqual(session.remainingSeconds, 1800)
     }
 
@@ -195,18 +197,35 @@ final class TempVPNCLITests: XCTestCase {
         }
     }
 
-    func testPaidSessionMustRemainBoundToSelectedNode() throws {
-        XCTAssertEqual(
-            try enforceSelectedNode(
-                selectedNodeURL: "https://de.example/",
-                paidNodeURL: "https://de.example"
-            ),
-            "https://de.example"
+    func testPortableSessionCanReconnectThroughAnotherNodeId() throws {
+        let data = try connectRequestBody(nodeId: "fr-paris", publicKey: "local-public-key")
+        let body = try JSONSerialization.jsonObject(with: data) as? [String: String]
+        XCTAssertEqual(body?["node_id"], "fr-paris")
+        XCTAssertEqual(body?["client_public_key"], "local-public-key")
+    }
+
+    func testPaidCapabilityIsPersistedBeforeActivationWithPrivatePermissions() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        setenv("TEMPVPN_STATE_DIR", directory.path, 1)
+        defer {
+            unsetenv("TEMPVPN_STATE_DIR")
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let paid = PaidSession(
+            sessionId: "sess_saved",
+            nodeURL: "https://madrid.example",
+            logicalNode: "madrid",
+            notAfter: "2030-01-01T00:00:00Z",
+            remainingSeconds: 600,
+            state: "paused"
         )
-        XCTAssertThrowsError(try enforceSelectedNode(
-            selectedNodeURL: "https://fr.example",
-            paidNodeURL: "https://de.example"
-        ))
+        try saveCapability(paid, registryURL: "https://registry.example")
+        XCTAssertEqual(try savedCapabilityCount(), 1)
+        let attributes = try FileManager.default.attributesOfItem(
+            atPath: try capabilityStoreURL().path
+        )
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
     }
 
     func testPausedResumeRefreshesGenerationMetadataAndKeepsKeychainPrivateKey() {
