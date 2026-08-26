@@ -39,6 +39,11 @@ mpp_payment_recipient = "0xB01E80a8CD7C72589f30D2004aeb60937a2150d3"
 
 # Fixed paid sessions use explicit in-memory mode by default for isolated development.
 fixed_session_mode = "memory"
+# Production without a coordinator can persist fixed sessions and redacted
+# payment audit rows on the node's persistent disk:
+# fixed_session_mode = "sqlite"
+# node_state_sqlite_path = "/var/lib/vpn-node-daemon/node-state.sqlite"
+# audit_log_path = "/var/log/vpn-node-daemon/events.jsonl"
 
 # Coordinator mode is used by persistent blue/green node generations. The URL is
 # the private mTLS listener, never the public registry URL.

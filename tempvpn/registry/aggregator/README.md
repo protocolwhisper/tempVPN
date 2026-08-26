@@ -6,10 +6,15 @@ The aggregator combines the configured regional node catalogs and publishes the 
 
 - `GET /health` reports regional upstream reachability.
 - `GET /nodes` returns the merged active node catalog.
-- `GET /openapi.json` describes discovery and the node-hosted fixed and streaming session lifecycle.
+- `POST /sessions` purchases a paused fixed-session balance on a selected node.
+- `POST /sessions/{session_id}/connect` activates a paused balance on a selected node.
+- `GET /sessions/{session_id}/status`, `POST .../heartbeat`, and `POST .../pause` manage the fixed-session lifecycle.
+- `POST /sessions/stream` proxies the separate node-bound Session v2 SSE product without imposing a total response timeout.
+- `GET /openapi.json` describes the complete registry-hosted API.
+- `GET /docs` redirects human readers to `https://tempvpn.xyz/docs/`; `GET /docs/markdown.md` serves the agent-readable workflow.
 
-The registry does not proxy payments or VPN lifecycle calls. After selecting a node from `/nodes`, clients must substitute that record's HTTPS `api_url` for the `{api_url}` server variable in session operations.
+The registry is the public control-plane origin for discovery, payment, and lifecycle calls. Clients select a node from `/nodes`, send its `id` as `node_id` when purchasing or connecting, and keep all HTTP requests at the registry origin. A node's `api_url` is diagnostic metadata, not a client payment origin.
 
-`POST /sessions` creates a paid but paused fixed-duration balance. Pricing is $0.01 per minute; duration must be a whole number of minutes. Clients must then call `POST /sessions/{session_id}/connect` with a locally generated WireGuard public key. They should call `POST /sessions/{session_id}/pause` when disconnecting so connected-time consumption stops while unused balance remains available.
+`POST /sessions` creates a paid but paused fixed-duration balance. Duration uses 60-second billing intervals; the runtime MPP 402 challenge is authoritative for the price and payment terms. Clients must then call `POST /sessions/{session_id}/connect` with a selected `node_id` and locally generated WireGuard public key. They should call `POST /sessions/{session_id}/pause` when disconnecting so connected-time consumption stops while unused balance remains portable to another available node.
 
-After deploying an OpenAPI change, update the separately maintained MPP directory entry with the same methods and paths, reindex it, and verify the directory copy still includes connect and pause. Preserve the existing production ownership of `/docs` and `/llms.txt` when rolling out a new aggregator image.
+After deploying an OpenAPI change, update the separately maintained MPP directory entry with the same methods and paths, reindex it, and verify the directory copy includes status, connect, pause, and heartbeat. The separately maintained website docs must mirror this registry-first workflow. Streaming remains a separate, non-portable metered product.

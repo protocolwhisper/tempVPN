@@ -608,12 +608,14 @@ impl Store {
         &self,
         token: &str,
         client_public_key: &str,
+        target_logical_node: &str,
         generation_id: &str,
         cipher: &TokenCipher,
     ) -> Result<ActivationClaim> {
         if client_public_key.trim().is_empty() {
             return Err(Error::Invalid("client public key"));
         }
+        validate_identifier("logical node", target_logical_node)?;
         let hash = token_lookup_hash(token);
         let now = Utc::now();
         let mut connection = self.connection.lock().await;
@@ -658,6 +660,7 @@ impl Store {
         ) = session.ok_or(Error::NotFound("session"))?;
         let is_idempotent_claim = (state == "active" && phase.is_none()
             || phase.as_deref() == Some("activating"))
+            && logical_node == target_logical_node
             && active_generation.as_deref() == Some(generation_id)
             && stored_public_key.as_deref() == Some(client_public_key);
         if is_idempotent_claim {
@@ -686,39 +689,49 @@ impl Store {
         if state != "paused" || phase.is_some() || remaining <= 0 || parse_time(&grace)? <= now {
             return Err(Error::Conflict("session is not currently connectable"));
         }
-        let generation: Option<(String, String, String)> = transaction
+        let generation: Option<(String, String, String, String, String)> = transaction
             .query_row(
-                "SELECT wireguard_endpoint, wireguard_public_key, expected_exit_ip
+                "SELECT wireguard_endpoint, wireguard_public_key, expected_exit_ip,
+                        tunnel_network, api_url
                  FROM node_generations WHERE logical_node = ?1 AND generation_id = ?2
                    AND admission_state = 'accepting' AND health_expires_at > ?3",
-                params![logical_node, generation_id, now.to_rfc3339()],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                params![target_logical_node, generation_id, now.to_rfc3339()],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )
             .optional()?;
-        let (wireguard_endpoint, wireguard_public_key, expected_exit_ip) =
+        let (wireguard_endpoint, wireguard_public_key, expected_exit_ip, tunnel_network, node_url) =
             generation.ok_or(Error::Conflict("generation is not accepting sessions"))?;
+        let migrating = logical_node != target_logical_node;
+        if migrating {
+            transaction.execute(
+                "UPDATE sessions SET logical_node = ?2, node_url = ?3, assigned_ip = NULL,
+                        updated_at = ?4, revision = revision + 1 WHERE session_pk = ?1",
+                params![session_pk, target_logical_node, node_url, now.to_rfc3339()],
+            )?;
+        }
+        let assigned_ip = if migrating { None } else { assigned_ip };
         let address_was_new = assigned_ip.is_none();
         let assigned_ip = match assigned_ip {
             Some(address) => address,
-            None => {
-                let tunnel_network: String = transaction.query_row(
-                    "SELECT tunnel_network FROM node_generations
-                     WHERE logical_node = ?1 AND generation_id = ?2",
-                    params![logical_node, generation_id],
-                    |row| row.get(0),
-                )?;
-                allocate_address(&transaction, &logical_node, &tunnel_network)?
-            }
+            None => allocate_address(&transaction, target_logical_node, &tunnel_network)?,
         };
         transaction.execute(
             "UPDATE node_generations SET desired_peer_revision = desired_peer_revision + 1,
                 updated_at = ?3 WHERE logical_node = ?1 AND generation_id = ?2",
-            params![logical_node, generation_id, now.to_rfc3339()],
+            params![target_logical_node, generation_id, now.to_rfc3339()],
         )?;
         let desired_revision: i64 = transaction.query_row(
             "SELECT desired_peer_revision FROM node_generations
              WHERE logical_node = ?1 AND generation_id = ?2",
-            params![logical_node, generation_id],
+            params![target_logical_node, generation_id],
             |row| row.get(0),
         )?;
         let lease = now + chrono::Duration::seconds(90);
@@ -728,7 +741,7 @@ impl Store {
                 assigned_ip, lease_expires_at, desired_revision
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
-                logical_node,
+                target_logical_node,
                 generation_id,
                 session_pk,
                 client_public_key,
@@ -1530,19 +1543,27 @@ mod tests {
     use tempfile::tempdir;
 
     fn generation(id: &str) -> GenerationRegistration {
+        generation_for("node-a", id, "10.90.0.0/24")
+    }
+
+    fn generation_for(
+        logical_node: &str,
+        generation_id: &str,
+        tunnel_network: &str,
+    ) -> GenerationRegistration {
         GenerationRegistration {
-            logical_node: "node-a".into(),
-            generation_id: id.into(),
-            node_name: "Node A".into(),
+            logical_node: logical_node.into(),
+            generation_id: generation_id.into(),
+            node_name: logical_node.into(),
             region: "test".into(),
             country_code: Some("US".into()),
             subdivision_code: None,
             city: Some("Test City".into()),
-            api_url: "https://node-a.test".into(),
-            wireguard_endpoint: format!("{id}.test:51820"),
-            wireguard_public_key: format!("{id}-server-key"),
+            api_url: format!("https://{logical_node}.test"),
+            wireguard_endpoint: format!("{logical_node}-{generation_id}.test:51820"),
+            wireguard_public_key: format!("{generation_id}-server-key"),
             expected_exit_ip: "192.0.2.1".into(),
-            tunnel_network: "10.90.0.0/24".into(),
+            tunnel_network: tunnel_network.into(),
             available_slots: 253,
             health_expires_at: Utc::now() + chrono::Duration::minutes(5),
         }
@@ -1885,7 +1906,7 @@ mod tests {
             .await
             .unwrap();
         let blue_claim = store
-            .claim_session(&paid.session_id, "client-key", "blue", &cipher)
+            .claim_session(&paid.session_id, "client-key", "node-a", "blue", &cipher)
             .await
             .unwrap();
         assert_eq!(blue_claim.session.phase.as_deref(), Some("activating"));
@@ -1901,7 +1922,7 @@ mod tests {
             .unwrap();
         store.promote_generation("node-a", "green").await.unwrap();
         let retried_blue_claim = store
-            .claim_session(&paid.session_id, "client-key", "blue", &cipher)
+            .claim_session(&paid.session_id, "client-key", "node-a", "blue", &cipher)
             .await
             .unwrap();
         assert_eq!(retried_blue_claim.session.state, SessionState::Active);
@@ -1939,7 +1960,7 @@ mod tests {
         assert_eq!(releasing.phase.as_deref(), Some("releasing"));
         assert!(matches!(
             store
-                .claim_session(&paid.session_id, "client-key", "green", &cipher)
+                .claim_session(&paid.session_id, "client-key", "node-a", "green", &cipher)
                 .await,
             Err(Error::Conflict(_))
         ));
@@ -1957,7 +1978,13 @@ mod tests {
             .unwrap();
 
         let green_claim = store
-            .claim_session(&paid.session_id, "new-client-key", "green", &cipher)
+            .claim_session(
+                &paid.session_id,
+                "new-client-key",
+                "node-a",
+                "green",
+                &cipher,
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -1965,7 +1992,7 @@ mod tests {
             Some("10.90.0.2")
         );
         assert_eq!(green_claim.wireguard_public_key, "green-server-key");
-        assert_eq!(green_claim.wireguard_endpoint, "green.test:51820");
+        assert_eq!(green_claim.wireguard_endpoint, "node-a-green.test:51820");
         store
             .acknowledge_peers("node-a", "green", green_claim.desired_revision, 1)
             .await
@@ -1973,6 +2000,90 @@ mod tests {
 
         let blue_drain = store.drain_status("node-a", "blue").await.unwrap();
         assert!(blue_drain.safe_to_delete);
+    }
+
+    #[tokio::test]
+    async fn paused_balance_migrates_to_another_logical_node() {
+        let store = Store::open_in_memory().unwrap();
+        let cipher = TokenCipher::new(&[21_u8; 32], 1).unwrap();
+        store
+            .register_generation(&generation_for("node-a", "blue", "10.90.0.0/24"))
+            .await
+            .unwrap();
+        store
+            .register_generation(&generation_for("node-b", "green", "10.91.0.0/24"))
+            .await
+            .unwrap();
+        store.promote_generation("node-a", "blue").await.unwrap();
+        store.promote_generation("node-b", "green").await.unwrap();
+
+        let fingerprint = token_lookup_hash("portable-session");
+        let intent = store
+            .create_payment_intent(
+                None,
+                "node-a",
+                300,
+                fingerprint,
+                1,
+                Utc::now() + chrono::Duration::minutes(5),
+            )
+            .await
+            .unwrap();
+        let paid = store
+            .redeem_payment(
+                &intent.intent_id,
+                "tempo",
+                "tx-portable",
+                fingerprint,
+                3600,
+                &cipher,
+            )
+            .await
+            .unwrap();
+        let first = store
+            .claim_session(&paid.session_id, "key-a", "node-a", "blue", &cipher)
+            .await
+            .unwrap();
+        store
+            .acknowledge_peers("node-a", "blue", first.desired_revision, 1)
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            store
+                .claim_session(&paid.session_id, "key-b", "node-b", "green", &cipher)
+                .await,
+            Err(Error::Conflict(_))
+        ));
+
+        store
+            .pause_session(&paid.session_id, &cipher)
+            .await
+            .unwrap();
+        let old_snapshot = store
+            .peer_snapshot("node-a", "blue", &cipher)
+            .await
+            .unwrap();
+        store
+            .acknowledge_peers("node-a", "blue", old_snapshot.revision, 0)
+            .await
+            .unwrap();
+
+        let migrated = store
+            .claim_session(&paid.session_id, "key-b", "node-b", "green", &cipher)
+            .await
+            .unwrap();
+        assert_eq!(migrated.session.logical_node, "node-b");
+        assert_eq!(migrated.session.node_url, "https://node-b.test");
+        assert_eq!(migrated.session.assigned_ip.as_deref(), Some("10.91.0.2"));
+        assert_eq!(migrated.wireguard_endpoint, "node-b-green.test:51820");
+        assert_eq!(
+            store
+                .allocate_address("node-a", "10.90.0.0/24")
+                .await
+                .unwrap(),
+            "10.90.0.2"
+        );
     }
 
     #[tokio::test]
@@ -2017,7 +2128,7 @@ mod tests {
             let cipher = cipher.clone();
             tasks.push(tokio::spawn(async move {
                 store
-                    .claim_session(&token, &format!("key-{index}"), "green", &cipher)
+                    .claim_session(&token, &format!("key-{index}"), "node-a", "green", &cipher)
                     .await
                     .unwrap()
                     .session
@@ -2066,7 +2177,7 @@ mod tests {
             .await
             .unwrap();
         let claim = store
-            .claim_session(&paid.session_id, "client-key", "blue", &cipher)
+            .claim_session(&paid.session_id, "client-key", "node-a", "blue", &cipher)
             .await
             .unwrap();
         store

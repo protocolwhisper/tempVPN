@@ -170,7 +170,7 @@ async fn create_new_session(
     owner_id: &str,
     lease_expires: i64,
 ) -> Result<Session> {
-    let session = match sessions.create(options.duration_seconds).await {
+    let session = match sessions.create_ephemeral(options.duration_seconds).await {
         Ok(session) => match sessions
             .connect(&session.session_id, options.client_public_key.clone())
             .await
@@ -528,6 +528,8 @@ mod tests {
             mpp_realm: "vpn.test".into(),
             mpp_payment_currency: Address::repeat_byte(0x44).to_string(),
             mpp_payment_recipient: Address::repeat_byte(0x22).to_string(),
+            node_state_store: crate::config::NodeStateStoreConfig::Memory,
+            audit_log_path: None,
             coordinator: None,
             streaming: StreamingConfig {
                 enabled: true,

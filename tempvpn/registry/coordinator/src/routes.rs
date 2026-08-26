@@ -260,7 +260,7 @@ async fn session_status(
     Extension(identity): Extension<CoordinationIdentity>,
     Json(request): Json<SessionTokenRequest>,
 ) -> Result<Json<crate::types::SessionRecord>> {
-    authorize_session(&state, &identity, &request.session_id).await?;
+    identity.node_scope()?;
     Ok(Json(
         state
             .store
@@ -274,7 +274,7 @@ async fn heartbeat_session(
     Extension(identity): Extension<CoordinationIdentity>,
     Json(request): Json<SessionTokenRequest>,
 ) -> Result<Json<crate::types::SessionRecord>> {
-    authorize_session(&state, &identity, &request.session_id).await?;
+    identity.node_scope()?;
     Ok(Json(
         state
             .store
@@ -288,17 +288,17 @@ async fn claim_session(
     Extension(identity): Extension<CoordinationIdentity>,
     Json(request): Json<SessionClaimRequest>,
 ) -> Result<Json<crate::types::ActivationClaim>> {
-    let logical_node = state
-        .store
-        .session_logical_node(&request.session_id)
-        .await?;
-    identity.require_node(&logical_node, &request.generation_id)?;
+    let (logical_node, generation_id) = identity.node_scope()?;
+    if generation_id != request.generation_id {
+        return Err(Error::Forbidden);
+    }
     Ok(Json(
         state
             .store
             .claim_session(
                 &request.session_id,
                 &request.client_public_key,
+                logical_node,
                 &request.generation_id,
                 &state.token_cipher,
             )
@@ -321,7 +321,7 @@ async fn pause_session(
     Extension(identity): Extension<CoordinationIdentity>,
     Json(request): Json<SessionTokenRequest>,
 ) -> Result<Json<crate::types::SessionRecord>> {
-    authorize_session(&state, &identity, &request.session_id).await?;
+    identity.node_scope()?;
     Ok(Json(
         state
             .store

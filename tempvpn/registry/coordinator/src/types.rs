@@ -227,6 +227,16 @@ pub enum CoordinationIdentity {
 }
 
 impl CoordinationIdentity {
+    pub fn node_scope(&self) -> crate::Result<(&str, &str)> {
+        match self {
+            Self::Node {
+                logical_node,
+                generation_id,
+            } => Ok((logical_node, generation_id)),
+            Self::Operator => Err(crate::Error::Forbidden),
+        }
+    }
+
     pub fn require_node(&self, logical_node: &str, generation_id: &str) -> crate::Result<()> {
         match self {
             Self::Node {

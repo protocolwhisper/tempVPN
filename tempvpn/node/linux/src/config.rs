@@ -29,6 +29,12 @@ pub enum ChannelStoreConfig {
     Sqlite(PathBuf),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NodeStateStoreConfig {
+    Memory,
+    Sqlite(PathBuf),
+}
+
 #[derive(Clone)]
 pub struct StreamingConfig {
     pub enabled: bool,
@@ -94,6 +100,8 @@ pub struct Config {
     pub mpp_realm: String,
     pub mpp_payment_currency: String,
     pub mpp_payment_recipient: String,
+    pub node_state_store: NodeStateStoreConfig,
+    pub audit_log_path: Option<PathBuf>,
     pub coordinator: Option<CoordinatorConfig>,
     pub streaming: StreamingConfig,
 }
@@ -132,6 +140,8 @@ struct FileConfig {
     mpp_payment_currency: Option<String>,
     mpp_payment_recipient: Option<String>,
     fixed_session_mode: Option<String>,
+    node_state_sqlite_path: Option<PathBuf>,
+    audit_log_path: Option<PathBuf>,
     coordinator_url: Option<String>,
     coordinator_logical_node: Option<String>,
     coordinator_generation_id: Option<String>,
@@ -288,40 +298,67 @@ impl Config {
             file.fixed_session_mode.clone(),
             "memory",
         );
-        let coordinator = match fixed_session_mode.to_ascii_lowercase().as_str() {
-            "memory" => None,
-            "coordinator" => Some(CoordinatorConfig {
-                url: env_or_required("VPN_NODE_COORDINATOR_URL", file.coordinator_url)?
-                    .trim_end_matches('/')
-                    .to_string(),
-                logical_node: env_or_default(
-                    "VPN_NODE_COORDINATOR_LOGICAL_NODE",
-                    file.coordinator_logical_node,
-                    &node_id,
-                ),
-                generation_id: env_or_required(
-                    "VPN_NODE_COORDINATOR_GENERATION_ID",
-                    file.coordinator_generation_id,
-                )?,
-                root_ca_path: env_path_required(
-                    "VPN_NODE_COORDINATOR_ROOT_CA_FILE",
-                    file.coordinator_root_ca_path,
-                )?,
-                certificate_path: env_path_required(
-                    "VPN_NODE_COORDINATOR_CERT_FILE",
-                    file.coordinator_certificate_path,
-                )?,
-                private_key_path: env_path_required(
-                    "VPN_NODE_COORDINATOR_KEY_FILE",
-                    file.coordinator_private_key_path,
-                )?,
-            }),
+        let node_state_sqlite_path = env::var_os("VPN_NODE_STATE_SQLITE_PATH")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| file.node_state_sqlite_path.clone());
+        let (node_state_store, coordinator) = match fixed_session_mode.to_ascii_lowercase().as_str()
+        {
+            "memory" => (
+                node_state_sqlite_path
+                    .map(NodeStateStoreConfig::Sqlite)
+                    .unwrap_or(NodeStateStoreConfig::Memory),
+                None,
+            ),
+            "sqlite" => (
+                NodeStateStoreConfig::Sqlite(node_state_sqlite_path.ok_or_else(|| {
+                    Error::InvalidConfig(
+                        "VPN_NODE_STATE_SQLITE_PATH is required for sqlite fixed sessions".into(),
+                    )
+                })?),
+                None,
+            ),
+            "coordinator" => (
+                node_state_sqlite_path
+                    .map(NodeStateStoreConfig::Sqlite)
+                    .unwrap_or(NodeStateStoreConfig::Memory),
+                Some(CoordinatorConfig {
+                    url: env_or_required("VPN_NODE_COORDINATOR_URL", file.coordinator_url)?
+                        .trim_end_matches('/')
+                        .to_string(),
+                    logical_node: env_or_default(
+                        "VPN_NODE_COORDINATOR_LOGICAL_NODE",
+                        file.coordinator_logical_node,
+                        &node_id,
+                    ),
+                    generation_id: env_or_required(
+                        "VPN_NODE_COORDINATOR_GENERATION_ID",
+                        file.coordinator_generation_id,
+                    )?,
+                    root_ca_path: env_path_required(
+                        "VPN_NODE_COORDINATOR_ROOT_CA_FILE",
+                        file.coordinator_root_ca_path,
+                    )?,
+                    certificate_path: env_path_required(
+                        "VPN_NODE_COORDINATOR_CERT_FILE",
+                        file.coordinator_certificate_path,
+                    )?,
+                    private_key_path: env_path_required(
+                        "VPN_NODE_COORDINATOR_KEY_FILE",
+                        file.coordinator_private_key_path,
+                    )?,
+                }),
+            ),
             other => {
                 return Err(Error::InvalidConfig(format!(
-                    "VPN_NODE_FIXED_SESSION_MODE must be memory or coordinator, got {other}"
-                )))
+                "VPN_NODE_FIXED_SESSION_MODE must be memory, sqlite, or coordinator, got {other}"
+            )))
             }
         };
+        let audit_log_path = env::var_os("VPN_NODE_AUDIT_LOG_PATH")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .or(file.audit_log_path);
         let streaming = load_streaming_config(&streaming_file, &mpp_payment_recipient)?;
         validate_production_payment_identity(
             &streaming,
@@ -363,6 +400,8 @@ impl Config {
             mpp_realm,
             mpp_payment_currency,
             mpp_payment_recipient,
+            node_state_store,
+            audit_log_path,
             coordinator,
             streaming,
         })
@@ -571,59 +610,6 @@ fn validate_production_payment_identity(
     Ok(())
 }
 
-#[cfg(test)]
-mod production_payment_tests {
-    use super::*;
-
-    fn production_streaming() -> StreamingConfig {
-        StreamingConfig {
-            enabled: true,
-            mode: StreamingMode::Production,
-            chain_id: 4217,
-            reserve: "0x4d50500000000000000000000000000000000000"
-                .parse()
-                .unwrap(),
-            operator: "0x0000000000000000000000000000000000000001"
-                .parse()
-                .unwrap(),
-            unit_amount: 10_000,
-            billing_interval_seconds: 60,
-            suggested_reserve: 100_000,
-            min_voucher_delta: 10_000,
-            grace_period_seconds: 30,
-            close_signer: None,
-            store: ChannelStoreConfig::Sqlite("/tmp/session.sqlite".into()),
-        }
-    }
-
-    #[test]
-    fn production_rejects_development_payment_identity() {
-        let config = production_streaming();
-        let error = validate_production_payment_identity(
-            &config,
-            DEFAULT_MPP_RPC_URL,
-            DEFAULT_MPP_REALM,
-            DEFAULT_MPP_PAYMENT_CURRENCY,
-            DEFAULT_MPP_PAYMENT_RECIPIENT,
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("explicit Tempo mainnet"));
-    }
-
-    #[test]
-    fn production_accepts_explicit_mainnet_payment_identity() {
-        let config = production_streaming();
-        validate_production_payment_identity(
-            &config,
-            "https://rpc.tempo.xyz",
-            "tempvpn.xyz",
-            "0x20c000000000000000000000b9537d11c60e8b50",
-            "0x59E5aa2A081FB9F56FE9ae57b7688A5884d74dDC",
-        )
-        .unwrap();
-    }
-}
-
 fn env_var(name: &'static str) -> Option<String> {
     env::var(name).ok().filter(|value| !value.is_empty())
 }
@@ -677,4 +663,57 @@ where
     default
         .parse()
         .map_err(|_| Error::InvalidConfig(format!("invalid default value for {name}")))
+}
+
+#[cfg(test)]
+mod production_payment_tests {
+    use super::*;
+
+    fn production_streaming() -> StreamingConfig {
+        StreamingConfig {
+            enabled: true,
+            mode: StreamingMode::Production,
+            chain_id: 4217,
+            reserve: "0x4d50500000000000000000000000000000000000"
+                .parse()
+                .unwrap(),
+            operator: "0x0000000000000000000000000000000000000001"
+                .parse()
+                .unwrap(),
+            unit_amount: 10_000,
+            billing_interval_seconds: 60,
+            suggested_reserve: 100_000,
+            min_voucher_delta: 10_000,
+            grace_period_seconds: 30,
+            close_signer: None,
+            store: ChannelStoreConfig::Sqlite("/tmp/session.sqlite".into()),
+        }
+    }
+
+    #[test]
+    fn production_rejects_development_payment_identity() {
+        let config = production_streaming();
+        let error = validate_production_payment_identity(
+            &config,
+            DEFAULT_MPP_RPC_URL,
+            DEFAULT_MPP_REALM,
+            DEFAULT_MPP_PAYMENT_CURRENCY,
+            DEFAULT_MPP_PAYMENT_RECIPIENT,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("explicit Tempo mainnet"));
+    }
+
+    #[test]
+    fn production_accepts_explicit_mainnet_payment_identity() {
+        let config = production_streaming();
+        validate_production_payment_identity(
+            &config,
+            "https://rpc.tempo.xyz",
+            "tempvpn.xyz",
+            "0x20c000000000000000000000b9537d11c60e8b50",
+            "0x59E5aa2A081FB9F56FE9ae57b7688A5884d74dDC",
+        )
+        .unwrap();
+    }
 }

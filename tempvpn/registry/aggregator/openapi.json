@@ -8,7 +8,7 @@
   "servers": [
     {
       "url": "https://registry.tempvpn.xyz",
-      "description": "Global node registry. Use the selected node's api_url for session operations."
+      "description": "Global discovery, payment, and session control plane."
     }
   ],
   "tags": [
@@ -30,7 +30,7 @@
       "get": {
         "operationId": "listNodes",
         "summary": "List available VPN nodes",
-        "description": "Select one returned node and use its HTTPS api_url for every session request.",
+        "description": "Select one returned node and retain its id. Send payment and lifecycle requests to the registry origin.",
         "tags": ["Discovery"],
         "parameters": [
           {
@@ -76,20 +76,8 @@
       "post": {
         "operationId": "createFixedSession",
         "summary": "Purchase a fixed-duration VPN session",
-        "description": "$0.01 per minute; duration must be a whole number of minutes. The first request receives an MPP 402 Challenge. After payment, the new session is paused with null client_public_key and assigned_ip. Call the connect operation with a locally generated WireGuard public key to activate routing.",
+        "description": "Duration is purchased in 60-second billing intervals. The runtime MPP 402 Challenge is authoritative for price and payment terms. After payment, the new session is paused with null client_public_key and assigned_ip. Call the connect operation with a locally generated WireGuard public key to activate routing.",
         "tags": ["Fixed sessions"],
-        "servers": [
-          {
-            "url": "{api_url}",
-            "description": "Replace api_url with the exact HTTPS api_url from the selected /nodes record.",
-            "variables": {
-              "api_url": {
-                "default": "https://madrid.tempvpn.xyz",
-                "description": "Selected node's HTTPS API base URL."
-              }
-            }
-          }
-        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -126,21 +114,9 @@
       "post": {
         "operationId": "connectFixedSession",
         "summary": "Attach a WireGuard key and activate a paid session",
-        "description": "Required after purchase. The client generates a WireGuard keypair locally and sends only its public key. A successful response contains the assigned tunnel address and node connection parameters.",
+        "description": "Required after purchase. The client generates a WireGuard keypair locally and sends only its public key. Select any currently available node; a paused portable balance may move between nodes. A successful response contains the assigned tunnel address and node connection parameters.",
         "tags": ["Fixed sessions"],
         "security": [],
-        "servers": [
-          {
-            "url": "{api_url}",
-            "description": "Use the same selected node api_url that created the session.",
-            "variables": {
-              "api_url": {
-                "default": "https://madrid.tempvpn.xyz",
-                "description": "Selected node's HTTPS API base URL."
-              }
-            }
-          }
-        ],
         "parameters": [
           { "$ref": "#/components/parameters/SessionId" }
         ],
@@ -178,18 +154,6 @@
         "description": "Stops connected-time consumption and removes the WireGuard peer. This operation has no request body, is safe to repeat, and does not delete the paid session.",
         "tags": ["Fixed sessions"],
         "security": [],
-        "servers": [
-          {
-            "url": "{api_url}",
-            "description": "Use the same selected node api_url that owns the session.",
-            "variables": {
-              "api_url": {
-                "default": "https://madrid.tempvpn.xyz",
-                "description": "Selected node's HTTPS API base URL."
-              }
-            }
-          }
-        ],
         "parameters": [
           { "$ref": "#/components/parameters/SessionId" }
         ],
@@ -218,17 +182,6 @@
         "summary": "Refresh an active session",
         "tags": ["Fixed sessions"],
         "security": [],
-        "servers": [
-          {
-            "url": "{api_url}",
-            "variables": {
-              "api_url": {
-                "default": "https://madrid.tempvpn.xyz",
-                "description": "Selected node's HTTPS API base URL."
-              }
-            }
-          }
-        ],
         "parameters": [
           { "$ref": "#/components/parameters/SessionId" }
         ],
@@ -253,17 +206,6 @@
         "summary": "Get remaining balance and lifecycle state",
         "tags": ["Fixed sessions"],
         "security": [],
-        "servers": [
-          {
-            "url": "{api_url}",
-            "variables": {
-              "api_url": {
-                "default": "https://madrid.tempvpn.xyz",
-                "description": "Selected node's HTTPS API base URL."
-              }
-            }
-          }
-        ],
         "parameters": [
           { "$ref": "#/components/parameters/SessionId" }
         ],
@@ -285,19 +227,8 @@
       "post": {
         "operationId": "createStreamingSession",
         "summary": "Create or resume a metered VPN stream",
-        "description": "Returns an MPP Session v2 Challenge when unpaid and an SSE control stream after valid funding.",
+        "description": "Separate node-bound metered product. Returns an MPP Session v2 Challenge when unpaid and an SSE control stream after valid funding. Streaming credentials are not portable fixed-session balances.",
         "tags": ["Streaming sessions"],
-        "servers": [
-          {
-            "url": "{api_url}",
-            "variables": {
-              "api_url": {
-                "default": "https://madrid.tempvpn.xyz",
-                "description": "Selected node's HTTPS API base URL."
-              }
-            }
-          }
-        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -339,8 +270,13 @@
       "ConnectSessionRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["client_public_key"],
+        "required": ["node_id", "client_public_key"],
         "properties": {
+          "node_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "ID of a currently available node returned by GET /nodes."
+          },
           "client_public_key": {
             "type": "string",
             "minLength": 44,
@@ -354,14 +290,19 @@
       "CreateSessionRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["duration_seconds"],
+        "required": ["node_id", "duration_seconds"],
         "properties": {
+          "node_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "ID of the selected node returned by GET /nodes."
+          },
           "duration_seconds": {
             "type": "integer",
             "format": "uint64",
             "minimum": 60,
             "multipleOf": 60,
-            "description": "$0.01 per minute; duration must be a whole number of minutes. Subject to the selected node's maximum.",
+            "description": "Duration in 60-second billing intervals, subject to the selected node's maximum. The runtime 402 challenge is authoritative for price.",
             "examples": [300]
           }
         }
@@ -399,7 +340,7 @@
             "type": "string",
             "format": "uri",
             "pattern": "^https://",
-            "description": "HTTPS base URL for every paid and lifecycle request to this node."
+            "description": "Node API URL exposed for health and latency diagnostics. Clients send payment and lifecycle requests to the registry origin."
           },
           "wireguard_endpoint": { "type": "string" },
           "expected_exit_ip": { "type": "string" },
@@ -450,8 +391,13 @@
       "StreamSessionRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["client_public_key", "duration_seconds"],
+        "required": ["node_id", "client_public_key", "duration_seconds"],
         "properties": {
+          "node_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "ID of the node that will own this non-portable streaming session."
+          },
           "client_public_key": {
             "type": "string",
             "minLength": 44,

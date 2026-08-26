@@ -216,10 +216,12 @@ billing interval consumes one atomic unit; exhaustion disables the peer and
 emits `payment-need-voucher`, and a newer verified voucher resumes the same
 logical session without billing the paused period.
 
-Deployment follow-up: the external node registry entry, OpenAPI document, and
-`llms.txt` are maintained outside this checkout. They must all advertise
-`POST /sessions/stream`, include a valid WireGuard public-key request example,
-and be reindexed after the compatible node binary is deployed.
+Deployment follow-up: the directory entry is maintained outside this checkout.
+It must advertise the registry origin and `POST /sessions/stream`, include a
+valid WireGuard public-key request example, and be reindexed after the
+compatible node binary is deployed. The registry OpenAPI, `llms.txt`, and
+`/docs/markdown.md` live in this checkout. The separately maintained website
+docs must mirror their registry-first workflow.
 
 Production mode fails at startup unless `mpp_session_store = "sqlite"` and
 `mpp_session_sqlite_path` is configured. Put the database on durable storage

@@ -26,7 +26,7 @@ clap = { version = "4.6.1", features = ["derive"] }
 futures-core = "0.3.32"
 futures-util = "0.3.32"
 futures = "0.3.31"
-reqwest = { version = "0.13.4", default-features = false, features = ["json", "query", "rustls", "socks"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "query", "rustls", "socks", "stream"] }
 ring = "0.17.14"
 rcgen = { version = "0.14.8", features = ["pem", "x509-parser"] }
 rusqlite = { version = "0.38.0", features = ["bundled"] }
@@ -43,7 +43,7 @@ time = "0.3.55"
 tokio = { version = "1.52.3", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 toml = "1.1.2"
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 tower = "0.5.3"
 uuid = { version = "1.23.3", features = ["serde", "v4"] }
 x509-parser = "0.18.0"

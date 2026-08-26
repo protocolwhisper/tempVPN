@@ -20,7 +20,10 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use mpp::{
     protocol::{
         core::{extract_payment_scheme, Base64UrlJson, PaymentChallenge, PaymentCredential},
-        methods::tempo::session::SessionCredentialPayload,
+        methods::tempo::{
+            session::SessionCredentialPayload, session_method::ChannelStore,
+            session_receipt::SessionReceipt,
+        },
     },
     server::{
         axum::{ChallengeOptions, ChargeChallenger, ChargeConfig, MppCharge, PaymentRequired},
@@ -29,6 +32,7 @@ use mpp::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tracing::error;
 
 use crate::{
     config::Config,
@@ -301,10 +305,19 @@ async fn remove_node(
 
 async fn create_local_session(
     State(state): State<AppState>,
-    _charge: MppCharge<VpnSessionCharge>,
+    charge: MppCharge<VpnSessionCharge>,
     Json(request): Json<CreateSessionRequest>,
 ) -> Response {
-    match state.sessions.create(request.duration_seconds).await {
+    match state
+        .sessions
+        .create_paid(
+            request.duration_seconds,
+            &charge.receipt.reference,
+            VPN_SESSION_PRICE_AMOUNT,
+            &state.config.mpp_payment_currency,
+        )
+        .await
+    {
         Ok(session) => (StatusCode::CREATED, Json(session)).into_response(),
         Err(err) => (
             StatusCode::BAD_REQUEST,
@@ -388,6 +401,27 @@ async fn create_coordinator_session(
     {
         Ok(record) => {
             let session = public_session(&state.config, record, None);
+            if let Err(error) = state
+                .sessions
+                .record_coordinated_fixed_payment(
+                    &receipt.reference,
+                    &session,
+                    VPN_SESSION_PRICE_AMOUNT,
+                    &state.config.mpp_payment_currency,
+                )
+                .await
+            {
+                error!(
+                    event = "payment_audit_write_failed",
+                    node_id = %state.config.node_id,
+                    intent = "charge",
+                    action = "create_session",
+                    receipt_reference = %receipt.reference,
+                    session_id = %session.session_id,
+                    error = %error,
+                    "coordinator remains authoritative after audit append failure"
+                );
+            }
             let mut response = (StatusCode::CREATED, Json(session)).into_response();
             insert_receipt_header(&mut response, &receipt);
             response
@@ -660,12 +694,48 @@ async fn stream_session(
     };
     let payload: SessionCredentialPayload = match credential.payload_as() {
         Ok(payload) => payload,
-        Err(error) => return payment_required(&state, &query, &scoped, Some(error.to_string())),
+        Err(error) => return verified_payment_error(error.to_string()),
     };
     let channel_id = payload_channel_id(&payload).to_owned();
-    if matches!(payload, SessionCredentialPayload::Close { .. }) {
+    let (payment_action, payment_amount) = payload_action_amount(&payload);
+    if matches!(&payload, SessionCredentialPayload::Close { .. }) {
+        if let Err(error) = state
+            .sessions
+            .record_stream_payment(
+                &verified.receipt.reference,
+                payment_action,
+                &channel_id,
+                None,
+                payment_amount,
+                &state.config.mpp_payment_currency,
+                Some(query.duration_seconds),
+            )
+            .await
+        {
+            error!(
+                event = "payment_audit_write_failed",
+                node_id = %state.config.node_id,
+                intent = "session",
+                action = payment_action,
+                receipt_reference = %verified.receipt.reference,
+                channel_id,
+                error = %error,
+                "Session v2 remains authoritative after audit append failure"
+            );
+        }
         terminate_channel_session(&state, &channel_id).await;
-        return receipt_response(StatusCode::NO_CONTENT, &verified.receipt, Body::empty());
+        let receipt = match session_receipt(
+            &streaming,
+            &credential.challenge.id,
+            &channel_id,
+            Some(&verified.receipt.reference),
+        )
+        .await
+        {
+            Ok(receipt) => receipt,
+            Err(response) => return response,
+        };
+        return session_receipt_response(StatusCode::NO_CONTENT, &receipt, Body::empty());
     }
 
     let started = match start_metered_stream(
@@ -673,7 +743,7 @@ async fn stream_session(
         state.sessions.clone(),
         MeterOptions {
             challenge_id: credential.challenge.id.clone(),
-            channel_id,
+            channel_id: channel_id.clone(),
             client_public_key: query.client_public_key.clone(),
             duration_seconds: query.duration_seconds,
             tick_cost: state.config.streaming.unit_amount,
@@ -684,15 +754,43 @@ async fn stream_session(
     .await
     {
         Ok(started) => started,
-        Err(error) => return payment_required(&state, &query, &scoped, Some(error.to_string())),
+        Err(error) => return verified_payment_error(error.to_string()),
     };
 
+    if let Err(error) = state
+        .sessions
+        .record_stream_payment(
+            &verified.receipt.reference,
+            payment_action,
+            &channel_id,
+            Some(&started.session.session_id),
+            payment_amount,
+            &state.config.mpp_payment_currency,
+            Some(query.duration_seconds),
+        )
+        .await
+    {
+        error!(
+            event = "payment_audit_write_failed",
+            node_id = %state.config.node_id,
+            intent = "session",
+            action = payment_action,
+            receipt_reference = %verified.receipt.reference,
+            channel_id,
+            session_id = %started.session.session_id,
+            error = %error,
+            "Session v2 remains authoritative after audit append failure"
+        );
+    }
+
+    let receipt =
+        match session_receipt(&streaming, &credential.challenge.id, &channel_id, None).await {
+            Ok(receipt) => receipt,
+            Err(response) => return response,
+        };
     let session_header = HeaderValue::from_str(&started.session.session_id).ok();
-    let mut response = receipt_response(
-        StatusCode::OK,
-        &verified.receipt,
-        Body::from_stream(started.body),
-    );
+    let mut response =
+        session_receipt_response(StatusCode::OK, &receipt, Body::from_stream(started.body));
     response.headers_mut().insert(
         axum::http::header::CONTENT_TYPE,
         HeaderValue::from_static("text/event-stream; charset=utf-8"),
@@ -718,7 +816,7 @@ async fn manage_stream_session(
     Query(query): Query<StreamSessionRequest>,
     headers: HeaderMap,
 ) -> Response {
-    let (_streaming, scoped) = match scoped_streaming(&state, &query) {
+    let (streaming, scoped) = match scoped_streaming(&state, &query) {
         Ok(value) => value,
         Err(response) => return response,
     };
@@ -731,10 +829,53 @@ async fn manage_stream_session(
         Ok(verified) => verified,
         Err(error) => return payment_required(&state, &query, &scoped, Some(error.to_string())),
     };
-    if let Ok(SessionCredentialPayload::Close { channel_id, .. }) = credential.payload_as() {
+    let payload: SessionCredentialPayload = match credential.payload_as() {
+        Ok(payload) => payload,
+        Err(error) => return verified_payment_error(error.to_string()),
+    };
+    let channel_id = payload_channel_id(&payload).to_owned();
+    let (payment_action, payment_amount) = payload_action_amount(&payload);
+    if let Err(error) = state
+        .sessions
+        .record_stream_payment(
+            &verified.receipt.reference,
+            payment_action,
+            &channel_id,
+            None,
+            payment_amount,
+            &state.config.mpp_payment_currency,
+            Some(query.duration_seconds),
+        )
+        .await
+    {
+        error!(
+            event = "payment_audit_write_failed",
+            node_id = %state.config.node_id,
+            intent = "session",
+            action = payment_action,
+            receipt_reference = %verified.receipt.reference,
+            channel_id,
+            error = %error,
+            "Session v2 remains authoritative after audit append failure"
+        );
+    }
+    let close_tx_hash = matches!(payload, SessionCredentialPayload::Close { .. })
+        .then_some(verified.receipt.reference.as_str());
+    if close_tx_hash.is_some() {
         terminate_channel_session(&state, &channel_id).await;
     }
-    receipt_response(StatusCode::NO_CONTENT, &verified.receipt, Body::empty())
+    let receipt = match session_receipt(
+        &streaming,
+        &credential.challenge.id,
+        &channel_id,
+        close_tx_hash,
+    )
+    .await
+    {
+        Ok(receipt) => receipt,
+        Err(response) => return response,
+    };
+    session_receipt_response(StatusCode::NO_CONTENT, &receipt, Body::empty())
 }
 
 #[allow(clippy::result_large_err)]
@@ -870,7 +1011,46 @@ fn payment_required(
     response
 }
 
-fn receipt_response(status: StatusCode, receipt: &mpp::Receipt, body: Body) -> Response {
+async fn session_receipt(
+    streaming: &StreamingPayments,
+    challenge_id: &str,
+    channel_id: &str,
+    tx_hash: Option<&str>,
+) -> Result<SessionReceipt, Response> {
+    let channel = match streaming.store.get_channel(channel_id).await {
+        Ok(Some(channel)) => channel,
+        Ok(None) => {
+            return Err(verified_payment_error(
+                "verified payment channel state is unavailable".into(),
+            ))
+        }
+        Err(error) => return Err(verified_payment_error(error.to_string())),
+    };
+    let mut receipt = SessionReceipt::new(
+        chrono::Utc::now().to_rfc3339(),
+        challenge_id,
+        channel_id,
+        channel.highest_voucher_amount.to_string(),
+        channel.spent.to_string(),
+    );
+    receipt.units = Some(channel.units);
+    receipt.tx_hash = tx_hash.map(str::to_owned);
+    Ok(receipt)
+}
+
+fn verified_payment_error(error: String) -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({
+            "error": error,
+            "retryable": false,
+            "payment_accepted": true
+        })),
+    )
+        .into_response()
+}
+
+fn session_receipt_response(status: StatusCode, receipt: &SessionReceipt, body: Body) -> Response {
     let mut response = Response::builder().status(status).body(body).unwrap();
     if let Ok(value) = receipt.to_header().and_then(|header| {
         HeaderValue::from_str(&header)
@@ -887,6 +1067,23 @@ fn payload_channel_id(payload: &SessionCredentialPayload) -> &str {
         | SessionCredentialPayload::TopUp { channel_id, .. }
         | SessionCredentialPayload::Voucher { channel_id, .. }
         | SessionCredentialPayload::Close { channel_id, .. } => channel_id,
+    }
+}
+
+fn payload_action_amount(payload: &SessionCredentialPayload) -> (&'static str, Option<&str>) {
+    match payload {
+        SessionCredentialPayload::Open {
+            cumulative_amount, ..
+        } => ("open", Some(cumulative_amount)),
+        SessionCredentialPayload::TopUp {
+            additional_deposit, ..
+        } => ("top_up", Some(additional_deposit)),
+        SessionCredentialPayload::Voucher {
+            cumulative_amount, ..
+        } => ("voucher", Some(cumulative_amount)),
+        SessionCredentialPayload::Close {
+            cumulative_amount, ..
+        } => ("close", Some(cumulative_amount)),
     }
 }
 
@@ -1122,6 +1319,8 @@ mod tests {
             mpp_realm: "vpn.test".into(),
             mpp_payment_currency: Address::repeat_byte(0x44).to_string(),
             mpp_payment_recipient: Address::repeat_byte(0x22).to_string(),
+            node_state_store: crate::config::NodeStateStoreConfig::Memory,
+            audit_log_path: None,
             coordinator: None,
             streaming: StreamingConfig {
                 enabled: true,
@@ -1414,7 +1613,21 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
-        assert!(response.headers().contains_key("payment-receipt"));
+        let receipt = SessionReceipt::from_header(
+            response
+                .headers()
+                .get("payment-receipt")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(receipt.intent, "session");
+        assert_eq!(receipt.challenge_id, challenge.id);
+        assert_eq!(receipt.channel_id, channel_id.to_string());
+        assert_eq!(receipt.reference, channel_id.to_string());
+        assert_eq!(receipt.accepted_cumulative, "2000");
+        assert_eq!(receipt.spent, "0");
         assert_eq!(state.sessions.active_count().await, 0);
     }
 

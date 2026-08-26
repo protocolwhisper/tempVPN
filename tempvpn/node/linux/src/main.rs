@@ -4,6 +4,7 @@ mod error;
 mod helpers;
 mod ip_allocator;
 mod location;
+mod node_state;
 mod reconciliation;
 mod registry;
 mod routes;
@@ -14,9 +15,12 @@ mod wireguard;
 use alloy::{network::EthereumWallet, providers::ProviderBuilder};
 use clap::Parser;
 use mpp::server::{axum::ChargeChallenger, tempo, Mpp, TempoConfig};
-use std::sync::{
-    atomic::{AtomicUsize, Ordering},
-    Arc,
+use std::{
+    fs::OpenOptions,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    },
 };
 use tokio::net::TcpListener;
 use tracing::{error, info};
@@ -43,16 +47,39 @@ use tempvpn_coordinator_client::{
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let config = Config::load(Args::parse()).await?;
+    init_tracing(&config)?;
+
+    let sessions = Sessions::new(&config)?;
+    sessions.reconcile_startup().await?;
+    run(config, sessions).await
+}
+
+fn init_tracing(config: &Config) -> Result<()> {
+    let json_layer = config
+        .audit_log_path
+        .as_ref()
+        .map(|path| -> Result<_> {
+            let file = OpenOptions::new().create(true).append(true).open(path)?;
+            Ok(tracing_subscriber::fmt::layer()
+                .json()
+                .flatten_event(true)
+                .with_ansi(false)
+                .with_writer(Mutex::new(file)))
+        })
+        .transpose()?;
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "vpn_node_daemon=info,tower_http=info".into()),
         )
         .with(tracing_subscriber::fmt::layer())
+        .with(json_layer)
         .init();
+    Ok(())
+}
 
-    let config = Config::load(Args::parse()).await?;
-    let sessions = Sessions::new(&config)?;
+async fn run(config: Config, sessions: Arc<Sessions>) -> Result<()> {
     let coordinator = create_coordinator_client(&config).await?;
     let reconciler = coordinator.as_ref().map(|coordinator| {
         reconciliation::PeerReconciler::new(
