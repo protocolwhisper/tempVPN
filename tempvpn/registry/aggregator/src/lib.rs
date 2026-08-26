@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use axum::{
     body::{Body, Bytes},
-    extract::{Path, Query, State},
+    extract::{OriginalUri, Path, Query, State},
     http::{
         header::{ACCEPT, AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, WWW_AUTHENTICATE},
         HeaderMap, HeaderName, HeaderValue, Method, StatusCode,
@@ -103,7 +103,10 @@ pub fn router(state: AppState) -> Router {
         .route("/sessions/{session_id}/pause", post(pause_session))
         .route("/sessions/{session_id}/heartbeat", post(heartbeat_session))
         .route("/sessions/{session_id}/status", get(session_status))
-        .route("/sessions/stream", post(stream_session))
+        .route(
+            "/sessions/stream",
+            post(stream_session).head(manage_stream_session),
+        )
         .route("/openapi.json", get(openapi))
         .layer(cors)
         .with_state(state)
@@ -127,12 +130,12 @@ async fn service_docs() -> Redirect {
 }
 
 async fn service_docs_markdown() -> Response {
-    let document = "# TempVPN\n\nTempVPN sells temporary WireGuard VPN access through Tempo MPP on mainnet. The registry is the control-plane origin for discovery, payment, and session lifecycle requests.\n\n## Agent workflow\n\n1. Discover a node with `GET /nodes?available=true` and retain its `id`.\n2. Buy fixed access with `POST /sessions` and JSON `{\"node_id\":\"madrid\",\"duration_seconds\":1800}`.\n3. Connect it with `POST /sessions/{session_id}/connect` and the selected `node_id` plus a locally generated WireGuard public key.\n4. Use `GET /sessions/{session_id}/status`, `POST /sessions/{session_id}/heartbeat`, and `POST /sessions/{session_id}/pause` throughout the fixed session. A paused balance can reconnect through another available node.\n5. Use `POST /sessions/stream` as a separate, node-bound metered product; streaming credentials are not portable fixed-session balances.\n\nDuration is measured in 60-second billing intervals. Treat the runtime HTTP 402 challenge as authoritative for the price and payment terms. Node `api_url` values are diagnostic metadata, not client payment origins.\n\nMachine-readable API: /openapi.json\n";
+    let document = "# TempVPN\n\nTempVPN sells temporary WireGuard VPN access through Tempo MPP on mainnet. The registry is the control-plane origin for discovery, payment, and session lifecycle requests.\n\n## Agent workflow\n\n1. Discover a node with `GET /nodes?available=true` and retain its `id`.\n2. Buy fixed access with `POST /sessions` and JSON `{\"node_id\":\"madrid\",\"duration_seconds\":1800}`.\n3. Connect it with `POST /sessions/{session_id}/connect` and the selected `node_id` plus a locally generated WireGuard public key.\n4. Use `GET /sessions/{session_id}/status`, `POST /sessions/{session_id}/heartbeat`, and `POST /sessions/{session_id}/pause` throughout the fixed session. A paused balance can reconnect through another available node.\n5. Streaming is node-bound: use `POST /sessions/stream` to open and `HEAD /sessions/stream?node_id=<id>&client_public_key=<key>&duration_seconds=<seconds>` for voucher, top-up, resume, or close operations.\n\nFixed sessions cost $0.01 per minute. Requested duration is seconds and must be a positive multiple of 60; the charge is `$0.01 × (duration_seconds / 60)`. Treat the runtime HTTP 402 challenge as authoritative for payment details. Node `api_url` values are diagnostic metadata, not client payment origins.\n\nMachine-readable API: /openapi.json\n";
     ([(CONTENT_TYPE, "text/plain; charset=utf-8")], document).into_response()
 }
 
 async fn llms_txt() -> Response {
-    let document = "# TempVPN\n\n> Buy temporary WireGuard VPN access with Tempo MPP.\n\nService: https://registry.tempvpn.xyz\nOpenAPI: https://registry.tempvpn.xyz/openapi.json\nDocs: https://tempvpn.xyz/docs/\nMarkdown docs: https://registry.tempvpn.xyz/docs/markdown\n\nUse the registry origin for every request below. Node api_url values are diagnostic metadata, not payment origins.\nDiscover nodes: GET /nodes?available=true; retain the selected node id.\nFixed purchase: POST /sessions JSON {\"node_id\": \"madrid\", \"duration_seconds\": 1800}\nConnect fixed session: POST /sessions/<session_id>/connect JSON {\"node_id\": \"madrid\", \"client_public_key\": \"<wireguard-public-key>\"}\nStatus: GET /sessions/<session_id>/status\nHeartbeat: POST /sessions/<session_id>/heartbeat\nPause: POST /sessions/<session_id>/pause\nStreaming: POST /sessions/stream JSON {\"node_id\": \"madrid\", \"client_public_key\": \"<wireguard-public-key>\", \"duration_seconds\": 1800}\nStreaming is a separate node-bound metered product and is not a portable fixed-session balance.\nBilling interval: 60 seconds. Payment: Tempo mainnet MPP; follow the runtime 402 challenge for authoritative price and terms.\nNever send a wallet private key or WireGuard private key to TempVPN.\n";
+    let document = "# TempVPN\n\n> Buy temporary WireGuard VPN access with Tempo MPP.\n\nService: https://registry.tempvpn.xyz\nOpenAPI: https://registry.tempvpn.xyz/openapi.json\nDocs: https://tempvpn.xyz/docs/\nMarkdown docs: https://registry.tempvpn.xyz/docs/markdown\n\nUse the registry origin for every request below. Node api_url values are diagnostic metadata, not payment origins.\nDiscover nodes: GET /nodes?available=true; retain the selected node id.\nFixed purchase: POST /sessions JSON {\"node_id\": \"madrid\", \"duration_seconds\": 1800}\nConnect fixed session: POST /sessions/<session_id>/connect JSON {\"node_id\": \"madrid\", \"client_public_key\": \"<wireguard-public-key>\"}\nStatus: GET /sessions/<session_id>/status\nHeartbeat: POST /sessions/<session_id>/heartbeat\nPause: POST /sessions/<session_id>/pause\nStreaming open: POST /sessions/stream JSON {\"node_id\": \"madrid\", \"client_public_key\": \"<wireguard-public-key>\", \"duration_seconds\": 1800}\nStreaming voucher/top-up/resume/close: HEAD /sessions/stream?node_id=madrid&client_public_key=<wireguard-public-key>&duration_seconds=1800\nStreaming is a separate node-bound metered product and is not a portable fixed-session balance.\nFixed price: $0.01 per minute. Requested duration is seconds and must be a positive multiple of 60: `$0.01 × (duration_seconds / 60)`. Payment: Tempo mainnet MPP; follow the runtime 402 challenge for authoritative payment details.\nNever send a wallet private key or WireGuard private key to TempVPN.\n";
     ([(CONTENT_TYPE, "text/plain; charset=utf-8")], document).into_response()
 }
 
@@ -176,7 +179,7 @@ async fn create_session(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    proxy_to_selected_node(&state, headers, body, "/sessions").await
+    proxy_to_selected_node(&state, headers, body, Method::POST, "/sessions").await
 }
 
 async fn connect_session(
@@ -189,6 +192,7 @@ async fn connect_session(
         &state,
         headers,
         body,
+        Method::POST,
         &format!("/sessions/{session_id}/connect"),
     )
     .await
@@ -199,7 +203,39 @@ async fn stream_session(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    proxy_to_selected_node(&state, headers, body, "/sessions/stream").await
+    proxy_to_selected_node(&state, headers, body, Method::POST, "/sessions/stream").await
+}
+
+async fn manage_stream_session(
+    State(state): State<AppState>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> Response {
+    let node_id = headers
+        .get(NODE_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
+        .or_else(|| query_parameter(uri.query(), "node_id"));
+    let Some(node_id) = node_id else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(
+                json!({ "error": "node_id is required in the query or x-tempvpn-node-id header" }),
+            ),
+        )
+            .into_response();
+    };
+    proxy_to_node_id(
+        &state,
+        headers,
+        Bytes::new(),
+        Method::HEAD,
+        uri.path_and_query()
+            .map(|value| value.as_str())
+            .unwrap_or("/sessions/stream"),
+        &node_id,
+    )
+    .await
 }
 
 async fn pause_session(
@@ -251,6 +287,7 @@ async fn proxy_to_selected_node(
     state: &AppState,
     headers: HeaderMap,
     body: Bytes,
+    method: Method,
     path: &str,
 ) -> Response {
     let node_id = serde_json::from_slice::<Value>(&body)
@@ -274,8 +311,19 @@ async fn proxy_to_selected_node(
         )
             .into_response();
     };
+    proxy_to_node_id(state, headers, body, method, path, &node_id).await
+}
+
+async fn proxy_to_node_id(
+    state: &AppState,
+    headers: HeaderMap,
+    body: Bytes,
+    method: Method,
+    path: &str,
+    node_id: &str,
+) -> Response {
     let nodes = merge_nodes(fetch_all(state, &NodesQuery::default()).await);
-    let Some(node) = nodes.get(&node_id) else {
+    let Some(node) = nodes.get(node_id) else {
         return (
             StatusCode::NOT_FOUND,
             Json(json!({ "error": "selected node is unavailable" })),
@@ -289,7 +337,14 @@ async fn proxy_to_selected_node(
         )
             .into_response();
     };
-    proxy_request(state, headers, body, Method::POST, api_url, path).await
+    proxy_request(state, headers, body, method, api_url, path).await
+}
+
+fn query_parameter(query: Option<&str>, wanted: &str) -> Option<String> {
+    query?.split('&').find_map(|pair| {
+        let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+        (name == wanted && !value.is_empty()).then(|| value.to_owned())
+    })
 }
 
 async fn proxy_to_any_node(
@@ -531,6 +586,27 @@ mod tests {
             .into_response()
     }
 
+    async fn gateway_stream_head(
+        State(state): State<GatewayMockState>,
+        OriginalUri(uri): OriginalUri,
+        headers: HeaderMap,
+    ) -> Response {
+        let authorization = headers
+            .get(AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        state
+            .requests
+            .lock()
+            .await
+            .push((authorization, json!({ "path_and_query": uri.to_string() })));
+        (
+            StatusCode::NO_CONTENT,
+            [(HeaderName::from_static(PAYMENT_RECEIPT_HEADER), "receipt")],
+        )
+            .into_response()
+    }
+
     async fn spawn_gateway_mock() -> (String, Arc<Mutex<Vec<(Option<String>, Value)>>>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr: SocketAddr = listener.local_addr().unwrap();
@@ -545,6 +621,10 @@ mod tests {
                 Router::new()
                     .route("/nodes", get(gateway_nodes))
                     .route("/sessions", post(gateway_session))
+                    .route(
+                        "/sessions/stream",
+                        post(gateway_session).head(gateway_stream_head),
+                    )
                     .with_state(state),
             )
             .await
@@ -640,6 +720,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn streaming_head_keeps_node_affinity_query_and_payment_headers() {
+        let (upstream, requests) = spawn_gateway_mock().await;
+        let response = router(
+            AppState::new(
+                vec![Upstream {
+                    name: "test".into(),
+                    url: upstream,
+                }],
+                Duration::from_secs(1),
+            )
+            .unwrap(),
+        )
+        .oneshot(
+            Request::builder()
+                .method(Method::HEAD)
+                .uri("/sessions/stream?node_id=madrid&client_public_key=key&duration_seconds=60")
+                .header(AUTHORIZATION, "Payment voucher")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(response.headers()[PAYMENT_RECEIPT_HEADER], "receipt");
+        let seen = requests.lock().await;
+        assert_eq!(seen[0].0.as_deref(), Some("Payment voucher"));
+        assert_eq!(
+            seen[0].1["path_and_query"],
+            "/sessions/stream?node_id=madrid&client_public_key=key&duration_seconds=60"
+        );
+    }
+
+    #[tokio::test]
     async fn openapi_documents_the_complete_fixed_session_lifecycle() {
         let response = router(
             AppState::new(
@@ -684,7 +798,7 @@ mod tests {
         assert!(duration["description"]
             .as_str()
             .unwrap()
-            .contains("60-second billing intervals"));
+            .contains("$0.01 per minute"));
 
         let connect = &document["paths"]["/sessions/{session_id}/connect"]["post"];
         assert_eq!(connect["operationId"], "connectFixedSession");
@@ -736,6 +850,13 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&json!("node_id")));
+        let stream_head = &document["paths"]["/sessions/stream"]["head"];
+        assert_eq!(stream_head["operationId"], "manageStreamingSession");
+        assert!(stream_head["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|parameter| parameter["name"] == "node_id"));
         assert_eq!(
             document["components"]["parameters"]["SessionId"]["required"],
             true

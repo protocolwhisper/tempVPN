@@ -26,7 +26,7 @@ use mpp::{
         },
     },
     server::{
-        axum::{ChallengeOptions, ChargeChallenger, ChargeConfig, MppCharge, PaymentRequired},
+        axum::{ChallengeOptions, ChargeChallenger, PaymentRequired},
         SessionChallengeOptions,
     },
 };
@@ -51,7 +51,7 @@ use tempvpn_coordinator_client::{
     SessionState as CoordinatorSessionState,
 };
 
-const VPN_SESSION_PRICE_AMOUNT: &str = "0.01";
+const FIXED_SESSION_CENTS_PER_STARTED_MINUTE: u64 = 1;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -67,18 +67,6 @@ pub struct AppState {
 impl axum::extract::FromRef<AppState> for Arc<dyn ChargeChallenger> {
     fn from_ref(state: &AppState) -> Self {
         state.challenger.clone()
-    }
-}
-
-struct VpnSessionCharge;
-
-impl ChargeConfig for VpnSessionCharge {
-    fn amount() -> &'static str {
-        VPN_SESSION_PRICE_AMOUNT
-    }
-
-    fn description() -> Option<&'static str> {
-        Some("Temporary WireGuard VPN session")
     }
 }
 
@@ -305,20 +293,43 @@ async fn remove_node(
 
 async fn create_local_session(
     State(state): State<AppState>,
-    charge: MppCharge<VpnSessionCharge>,
+    headers: HeaderMap,
     Json(request): Json<CreateSessionRequest>,
 ) -> Response {
+    if let Err(response) = validate_duration(&state.config, request.duration_seconds) {
+        return response;
+    }
+    let amount = fixed_session_price(request.duration_seconds);
+    let payment_header = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(extract_payment_scheme);
+    let Some(payment_header) = payment_header else {
+        return fixed_payment_required(&state, &amount);
+    };
+    let receipt = match state
+        .challenger
+        .verify_payment_for_amount(payment_header, &amount)
+        .await
+    {
+        Ok(receipt) => receipt,
+        Err(_) => return fixed_payment_required(&state, &amount),
+    };
     match state
         .sessions
         .create_paid(
             request.duration_seconds,
-            &charge.receipt.reference,
-            VPN_SESSION_PRICE_AMOUNT,
+            &receipt.reference,
+            &amount,
             &state.config.mpp_payment_currency,
         )
         .await
     {
-        Ok(session) => (StatusCode::CREATED, Json(session)).into_response(),
+        Ok(session) => {
+            let mut response = (StatusCode::CREATED, Json(session)).into_response();
+            insert_receipt_header(&mut response, &receipt);
+            response
+        }
         Err(err) => (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": err.to_string() })),
@@ -345,7 +356,15 @@ async fn create_coordinator_session(
         .as_ref()
         .expect("coordinator route requires coordinator config")
         .logical_node;
-    let fingerprint = fixed_session_fingerprint(logical_node, request.duration_seconds);
+    let amount = fixed_session_price(request.duration_seconds);
+    let fingerprint = fixed_session_fingerprint(
+        logical_node,
+        request.duration_seconds,
+        &amount,
+        &state.config.mpp_realm,
+        &state.config.mpp_payment_currency,
+        &state.config.mpp_payment_recipient,
+    );
     let payment_header = match headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -357,6 +376,7 @@ async fn create_coordinator_session(
                 &state,
                 coordinator,
                 request.duration_seconds,
+                &amount,
                 fingerprint,
             )
             .await
@@ -369,6 +389,7 @@ async fn create_coordinator_session(
                 &state,
                 coordinator,
                 request.duration_seconds,
+                &amount,
                 fingerprint,
             )
             .await
@@ -376,7 +397,7 @@ async fn create_coordinator_session(
     };
     let receipt = match state
         .challenger
-        .verify_payment_for_amount(payment_header, VPN_SESSION_PRICE_AMOUNT)
+        .verify_payment_for_amount(payment_header, &amount)
         .await
     {
         Ok(receipt) => receipt,
@@ -385,6 +406,7 @@ async fn create_coordinator_session(
                 &state,
                 coordinator,
                 request.duration_seconds,
+                &amount,
                 fingerprint,
             )
             .await
@@ -406,7 +428,7 @@ async fn create_coordinator_session(
                 .record_coordinated_fixed_payment(
                     &receipt.reference,
                     &session,
-                    VPN_SESSION_PRICE_AMOUNT,
+                    &amount,
                     &state.config.mpp_payment_currency,
                 )
                 .await
@@ -434,12 +456,13 @@ async fn coordinated_payment_required(
     state: &AppState,
     coordinator: &CoordinatorClient,
     duration_seconds: u64,
+    amount: &str,
     fingerprint: [u8; 32],
 ) -> Response {
     let challenge = match state.challenger.challenge(
-        VPN_SESSION_PRICE_AMOUNT,
+        amount,
         ChallengeOptions {
-            description: VpnSessionCharge::description(),
+            description: Some("Temporary WireGuard VPN session"),
             mppx_scope: None,
         },
     ) {
@@ -463,12 +486,15 @@ async fn coordinated_payment_required(
 
 #[allow(clippy::result_large_err)]
 fn validate_duration(config: &Config, duration_seconds: u64) -> Result<(), Response> {
-    if duration_seconds == 0 || duration_seconds > config.max_duration_seconds {
+    if duration_seconds == 0
+        || duration_seconds > config.max_duration_seconds
+        || duration_seconds % 60 != 0
+    {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(json!({
                 "error": format!(
-                    "duration_seconds must be between 1 and {}",
+                    "duration_seconds must be a positive multiple of 60 no greater than {}",
                     config.max_duration_seconds
                 )
             })),
@@ -478,8 +504,40 @@ fn validate_duration(config: &Config, duration_seconds: u64) -> Result<(), Respo
     Ok(())
 }
 
-fn fixed_session_fingerprint(logical_node: &str, duration_seconds: u64) -> [u8; 32] {
-    let input = format!("fixed-session-v1\0{logical_node}\0{duration_seconds}");
+fn fixed_session_price(duration_seconds: u64) -> String {
+    let minutes = duration_seconds / 60;
+    let cents = minutes.saturating_mul(FIXED_SESSION_CENTS_PER_STARTED_MINUTE);
+    format!("{}.{:02}", cents / 100, cents % 100)
+}
+
+fn fixed_payment_required(state: &AppState, amount: &str) -> Response {
+    match state.challenger.challenge(
+        amount,
+        ChallengeOptions {
+            description: Some("Temporary WireGuard VPN session"),
+            mppx_scope: None,
+        },
+    ) {
+        Ok(challenge) => PaymentRequired(challenge).into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": error, "retryable": true })),
+        )
+            .into_response(),
+    }
+}
+
+fn fixed_session_fingerprint(
+    logical_node: &str,
+    duration_seconds: u64,
+    amount: &str,
+    realm: &str,
+    currency: &str,
+    recipient: &str,
+) -> [u8; 32] {
+    let input = format!(
+        "fixed-session-v2\0{logical_node}\0{duration_seconds}\0{amount}\0{realm}\0{currency}\0{recipient}\0/sessions"
+    );
     digest(&SHA256, input.as_bytes())
         .as_ref()
         .try_into()
@@ -1755,6 +1813,21 @@ mod tests {
     }
 
     #[test]
+    fn fixed_price_requires_whole_minutes() {
+        assert_eq!(fixed_session_price(60), "0.01");
+        assert_eq!(fixed_session_price(120), "0.02");
+        assert_eq!(fixed_session_price(3_600), "0.60");
+
+        let config = test_config();
+        assert!(validate_duration(&config, 60).is_ok());
+        assert!(validate_duration(&config, 120).is_ok());
+        assert!(validate_duration(&config, 0).is_err());
+        assert!(validate_duration(&config, 59).is_err());
+        assert!(validate_duration(&config, 61).is_err());
+        assert!(validate_duration(&config, 90).is_err());
+    }
+
+    #[test]
     fn promotion_overlap_accepts_the_shared_challenge_key() {
         let config = test_config();
         let old_generation = Mpp::create(
@@ -1770,9 +1843,9 @@ mod tests {
         .unwrap();
         let challenge = old_generation
             .challenge(
-                VPN_SESSION_PRICE_AMOUNT,
+                &fixed_session_price(60),
                 ChallengeOptions {
-                    description: VpnSessionCharge::description(),
+                    description: Some("Temporary WireGuard VPN session"),
                     mppx_scope: None,
                 },
             )

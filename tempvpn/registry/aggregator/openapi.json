@@ -76,7 +76,7 @@
       "post": {
         "operationId": "createFixedSession",
         "summary": "Purchase a fixed-duration VPN session",
-        "description": "Duration is purchased in 60-second billing intervals. The runtime MPP 402 Challenge is authoritative for price and payment terms. After payment, the new session is paused with null client_public_key and assigned_ip. Call the connect operation with a locally generated WireGuard public key to activate routing.",
+        "description": "Fixed sessions cost $0.01 per minute. Duration is expressed in seconds and must be a positive multiple of 60: $0.01 × (duration_seconds / 60). The runtime MPP 402 Challenge is authoritative for payment details. After payment, the new session is paused with null client_public_key and assigned_ip.",
         "tags": ["Fixed sessions"],
         "requestBody": {
           "required": true,
@@ -250,6 +250,39 @@
           "402": { "$ref": "#/components/responses/PaymentRequired" },
           "503": { "$ref": "#/components/responses/ServiceUnavailable" }
         }
+      },
+      "head": {
+        "operationId": "manageStreamingSession",
+        "summary": "Send a streaming voucher, top-up, resume, or close operation",
+        "description": "Proxies the operation to the exact node that owns the non-portable Session v2 channel. Supply the same node_id and stream request fields as query parameters.",
+        "tags": ["Streaming sessions"],
+        "parameters": [
+          {
+            "name": "node_id",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "string", "minLength": 1 }
+          },
+          {
+            "name": "client_public_key",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "string", "minLength": 44, "maxLength": 44 }
+          },
+          {
+            "name": "duration_seconds",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "integer", "format": "uint64", "minimum": 1 }
+          }
+        ],
+        "responses": {
+          "200": { "description": "Streaming channel operation accepted." },
+          "204": { "description": "Streaming channel closed." },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "402": { "$ref": "#/components/responses/PaymentRequired" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
       }
     }
   },
@@ -302,7 +335,7 @@
             "format": "uint64",
             "minimum": 60,
             "multipleOf": 60,
-            "description": "Duration in 60-second billing intervals, subject to the selected node's maximum. The runtime 402 challenge is authoritative for price.",
+            "description": "Duration in seconds as a positive multiple of 60. Fixed access costs $0.01 per minute.",
             "examples": [300]
           }
         }
