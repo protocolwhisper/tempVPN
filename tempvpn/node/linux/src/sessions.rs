@@ -179,9 +179,12 @@ impl Sessions {
         durable: bool,
         payment_event: Option<AuditEvent>,
     ) -> Result<Session> {
-        if duration_seconds == 0 || duration_seconds > self.max_duration_seconds {
+        if duration_seconds == 0
+            || duration_seconds > self.max_duration_seconds
+            || duration_seconds % 60 != 0
+        {
             return Err(Error::InvalidRequest(format!(
-                "duration_seconds must be between 1 and {}",
+                "duration_seconds must be a positive multiple of 60 no greater than {}",
                 self.max_duration_seconds
             )));
         }
@@ -1307,14 +1310,18 @@ mod tests {
 
     #[tokio::test]
     async fn expired_balance_cannot_reconnect() {
-        let sessions = Sessions::new(&test_config(1)).unwrap();
-        let created = sessions.create(1).await.unwrap();
+        let sessions = Sessions::new(&test_config(60)).unwrap();
+        let created = sessions.create(60).await.unwrap();
         sessions
             .connect(&created.session_id, "client-public-key".to_string())
             .await
             .unwrap();
 
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        {
+            let mut store = sessions.store.lock().await;
+            let record = store.sessions.get_mut(&created.session_id).unwrap();
+            record.session.remaining_seconds = 0;
+        }
         sessions.expire_sessions().await;
 
         let err = sessions
@@ -1322,6 +1329,16 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("session not found"));
+    }
+
+    #[tokio::test]
+    async fn session_store_rejects_partial_minutes() {
+        let sessions = Sessions::new(&test_config(3600)).unwrap();
+
+        for duration_seconds in [0, 1, 59, 61] {
+            let error = sessions.create(duration_seconds).await.unwrap_err();
+            assert!(error.to_string().contains("positive multiple of 60"));
+        }
     }
 
     #[tokio::test]

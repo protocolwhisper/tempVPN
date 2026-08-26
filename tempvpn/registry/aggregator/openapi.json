@@ -273,7 +273,12 @@
             "name": "duration_seconds",
             "in": "query",
             "required": true,
-            "schema": { "type": "integer", "format": "uint64", "minimum": 1 }
+            "schema": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 60,
+              "multipleOf": 60
+            }
           }
         ],
         "responses": {
@@ -480,7 +485,9 @@
           "duration_seconds": {
             "type": "integer",
             "format": "uint64",
-            "minimum": 1
+            "minimum": 60,
+            "multipleOf": 60,
+            "description": "Safety cap in seconds as a positive multiple of 60. Streaming usage costs $0.01 per minute."
           }
         }
       }

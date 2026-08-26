@@ -1499,6 +1499,15 @@ mod tests {
             .unwrap()
             .contains("$0.01 per minute"));
 
+        let stream_duration = &document["components"]["schemas"]["StreamSessionRequest"]
+            ["properties"]["duration_seconds"];
+        assert_eq!(stream_duration["minimum"], 60);
+        assert_eq!(stream_duration["multipleOf"], 60);
+        let stream_head_duration =
+            &document["paths"]["/sessions/stream"]["head"]["parameters"][2]["schema"];
+        assert_eq!(stream_head_duration["minimum"], 60);
+        assert_eq!(stream_head_duration["multipleOf"], 60);
+
         let connect = &document["paths"]["/sessions/{session_id}/connect"]["post"];
         assert_eq!(connect["operationId"], "connectFixedSession");
         assert_eq!(

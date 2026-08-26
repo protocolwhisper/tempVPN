@@ -979,12 +979,15 @@ fn scoped_streaming(
         )
             .into_response());
     }
-    if query.duration_seconds == 0 || query.duration_seconds > state.config.max_duration_seconds {
+    if query.duration_seconds == 0
+        || query.duration_seconds > state.config.max_duration_seconds
+        || query.duration_seconds % 60 != 0
+    {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(json!({
                 "error": format!(
-                    "duration_seconds must be between 1 and {}",
+                    "duration_seconds must be a positive multiple of 60 no greater than {}",
                     state.config.max_duration_seconds
                 )
             })),
@@ -1590,22 +1593,24 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_stream_duration_is_rejected_before_payment() {
-        let response = router(state().await)
-            .oneshot(
-                Request::builder()
-                    .method(Method::POST)
-                    .uri("/sessions/stream")
-                    .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(format!(
-                        r#"{{"client_public_key":"{TEST_CLIENT_PUBLIC_KEY}","duration_seconds":0}}"#
-                    )))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        for duration_seconds in [0, 1, 59, 61] {
+            let response = router(state().await)
+                .oneshot(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri("/sessions/stream")
+                        .header(axum::http::header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(format!(
+                            r#"{{"client_public_key":"{TEST_CLIENT_PUBLIC_KEY}","duration_seconds":{duration_seconds}}}"#
+                        )))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
 
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert!(!response.headers().contains_key(WWW_AUTHENTICATE));
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert!(!response.headers().contains_key(WWW_AUTHENTICATE));
+        }
     }
 
     #[tokio::test]

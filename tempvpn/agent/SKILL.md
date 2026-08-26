@@ -526,7 +526,9 @@ Content-Type: application/json
 Instead of buying a fixed duration up front, the client opens a Session v2
 payment channel reserve and the node charges one unit per billing interval
 while the tunnel stays up. Extending service time is a channel operation, not
-a new purchase. `duration_seconds` is a safety cap, not a prepaid amount.
+a new purchase. Each billing interval is exactly 60 seconds and costs $0.01.
+`duration_seconds` is a safety cap, not a prepaid amount, and MUST be a positive
+multiple of 60.
 
 An unpaid request returns `402` with a `WWW-Authenticate: Payment` challenge:
 MPP method `tempo`, intent `session`, `sessionProtocol: "v2"`, with the
