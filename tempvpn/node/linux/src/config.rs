@@ -484,7 +484,7 @@ fn load_streaming_config(file: &FileConfig, recipient: &str) -> Result<Streaming
     let unit_amount = env_or(
         "VPN_NODE_MPP_SESSION_UNIT_AMOUNT",
         file.mpp_session_unit_amount,
-        "1000",
+        "10000",
     )?;
     let billing_interval_seconds = env_or(
         "VPN_NODE_MPP_SESSION_BILLING_INTERVAL_SECONDS",
@@ -494,12 +494,12 @@ fn load_streaming_config(file: &FileConfig, recipient: &str) -> Result<Streaming
     let suggested_reserve = env_or(
         "VPN_NODE_MPP_SESSION_SUGGESTED_RESERVE",
         file.mpp_session_suggested_reserve,
-        "10000",
+        "100000",
     )?;
     let min_voucher_delta = env_or(
         "VPN_NODE_MPP_SESSION_MIN_VOUCHER_DELTA",
         file.mpp_session_min_voucher_delta,
-        "1000",
+        "10000",
     )?;
     let grace_period_seconds = env_or(
         "VPN_NODE_MPP_SESSION_GRACE_PERIOD_SECONDS",

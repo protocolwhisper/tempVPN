@@ -68,10 +68,10 @@ mpp_streaming_mode = "development"
 mpp_chain_id = 42431
 mpp_session_reserve = "0x4d50500000000000000000000000000000000000"
 mpp_session_operator = "0xB01E80a8CD7C72589f30D2004aeb60937a2150d3"
-mpp_session_unit_amount = 1000
+mpp_session_unit_amount = 10000
 mpp_session_billing_interval_seconds = 60
-mpp_session_suggested_reserve = 10000
-mpp_session_min_voucher_delta = 1000
+mpp_session_suggested_reserve = 100000
+mpp_session_min_voucher_delta = 10000
 mpp_session_grace_period_seconds = 30
 mpp_session_store = "memory"
 
