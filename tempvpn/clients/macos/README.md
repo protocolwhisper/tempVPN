@@ -136,8 +136,8 @@ Authenticate `gh`, ensure the release commit is on a publishable branch, then
 run:
 
 ```bash
-export TEMPVPN_VERSION="0.1.1"
-export TEMPVPN_BUILD_NUMBER="2"
+export TEMPVPN_VERSION="0.3.0"
+export TEMPVPN_BUILD_NUMBER="3"
 export APPLE_DEVELOPMENT_TEAM="T4295L8LL4"
 export DEVELOPER_ID_APPLICATION_IDENTITY="Developer ID Application: Name (T4295L8LL4)"
 export DEVELOPER_ID_INSTALLER_IDENTITY="Developer ID Installer: Name (T4295L8LL4)"

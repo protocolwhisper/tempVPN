@@ -13,6 +13,25 @@ resolve intent → preflight → query indexer → shortlist available nodes
 → connect native client → verify exit → report
 ```
 
+## Canonical source and updates
+
+The canonical skill bundle is
+`https://github.com/protocolwhisper/tempVPN/tree/main/tempvpn/agent`. Its
+entrypoint is
+`https://raw.githubusercontent.com/protocolwhisper/tempVPN/main/tempvpn/agent/SKILL.md`.
+Keep these URLs in user-facing setup guidance so an installed copy can always
+identify its maintained source.
+
+Do not silently replace this skill during setup, connection, or payment. When
+the user asks to install, update, or check for updates, compare the installed
+bundle with the canonical `main` bundle, explain whether it differs, and obtain
+approval before replacing local files. Update `SKILL.md` and `scripts/` from
+the same repository commit; never mix an updated entrypoint with older
+verification scripts. Validate the downloaded frontmatter has `name: tempvpn`
+and that both bootstrap and package-verification scripts are present before
+activating it. A skill update never authorizes client installation, account
+changes, or VPN payment.
+
 ## Interpret the request
 
 Extract:
@@ -236,9 +255,9 @@ the explicitly built Linux path). If neither the required binary nor a trusted
 source/release is available, stop and report the missing client before
 discovery or payment.
 
-Until a signed macOS release is published, the supported macOS bootstrap is a
-locally built, development-signed install; a free Apple ID is enough (no paid
-Apple Developer Program required):
+If the official signed macOS release is temporarily unavailable, maintainers
+may use a locally built, development-signed install; a free Apple ID is enough
+(no paid Apple Developer Program required):
 
 1. On the user's Mac, install Xcode and Go (`brew install go`) and clone the
    trusted source checkout.
@@ -398,7 +417,10 @@ not a recurring private-key or biometric prompt.
 Some nodes also offer metered streaming access at:
 
 ```text
-GET /sessions/stream?client_public_key=<wireguard-public-key>&duration_seconds=<safety-cap>
+POST /sessions/stream
+Content-Type: application/json
+
+{"client_public_key":"<wireguard-public-key>","duration_seconds":<safety-cap>}
 ```
 
 Instead of buying a fixed duration up front, the client opens a Session v2
@@ -432,11 +454,12 @@ On success the node responds `200 text/event-stream` with an
 
 To extend or resume, submit a newer voucher (or an on-chain `TopUp`) whose
 cumulative amount reaches `requiredCumulative`. Use `HEAD /sessions/stream`
-with the same query parameters to submit channel operations (voucher, top-up,
-or close) without consuming the SSE body. The same logical session resumes
-once the new state verifies. If the client does not replenish within the
-node's grace period, the peer is removed and the stream ends with a final
-receipt.
+with `client_public_key` and `duration_seconds` as query parameters to submit
+channel operations (voucher, top-up, or close) without consuming the SSE body.
+The same logical session resumes once the new state verifies. If the client
+does not replenish within the node's grace period, the peer is removed and the
+stream ends with a final receipt. `GET /sessions/stream` is never payable and
+must return `405 Method Not Allowed`.
 
 If the node answers `404` with "streaming payments are disabled", fall back to
 the one-time `POST /sessions` purchase flow above.

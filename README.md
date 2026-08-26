@@ -94,8 +94,14 @@ installer places the invisible host in `/Applications` and `tempvpnctl` in
 Ask Codex to install it:
 
 ```text
-$skill-installer Install the skill from https://github.com/protocolwhisper/tempVPN/tree/main/tempvpn
+$skill-installer Install the skill from https://github.com/protocolwhisper/tempVPN/tree/main/tempvpn/agent
 ```
+
+The skill records that same canonical bundle URL and the raw `SKILL.md` URL in
+its own instructions. To check for updates later, ask Codex to compare the
+installed `tempvpn` bundle with that canonical source and reinstall it after
+showing you the changes. The entrypoint and verification scripts must always
+come from the same repository commit.
 
 Alternatively, link a local clone into the user skill directory:
 
