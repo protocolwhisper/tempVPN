@@ -157,8 +157,8 @@ VPN_NODE_ADMIN_TOKEN="replace-with-a-server-only-secret" \
 
 Before deployment, configure WireGuard forwarding/NAT, replace every example
 placeholder, keep the admin token out of client environments, and terminate the
-HTTP API with TLS. The fixed-price `POST /sessions` flow remains available while
-streaming is introduced.
+HTTP API with TLS. The registry is the public origin for fixed payment and
+lifecycle; nodes continue health checks, WireGuard, and Session v2 streaming.
 
 ### Durable fixed sessions and blue/green drain
 
@@ -217,7 +217,8 @@ emits `payment-need-voucher`, and a newer verified voucher resumes the same
 logical session without billing the paused period.
 
 Deployment follow-up: the directory entry is maintained outside this checkout.
-It must advertise the registry origin and `POST /sessions/stream`, include a
+It must advertise the registry origin, fixed lifecycle routes, and streaming
+`POST /sessions/stream` plus `HEAD /sessions/stream`, include a
 valid WireGuard public-key request example, and be reindexed after the
 compatible node binary is deployed. The registry OpenAPI, `llms.txt`, and
 `/docs/markdown` live in this checkout. The separately maintained website

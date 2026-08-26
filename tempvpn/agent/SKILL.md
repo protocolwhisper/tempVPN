@@ -54,7 +54,8 @@ Extract:
 
 - **Action:** setup, preflight, connect/buy, status, heartbeat, or disconnect.
 - **Duration:** convert to seconds (`30 mins` → `1800`). Never purchase when the
-  duration is missing or ambiguous.
+  duration is missing or ambiguous. Fixed duration must be a positive multiple
+  of 60 seconds; reject or clarify partial-minute requests.
 - **Location:** normalize an unambiguous country to its ISO 3166-1 alpha-2 code;
   retain an optional city or advertised region. Do not maintain or consult an
   exhaustive phrase list in this skill. If location is omitted, select the
@@ -428,9 +429,10 @@ mppx "$REGISTRY_URL/sessions" \
 
 Construct the JSON from normalized values rather than interpolating untrusted
 text. Save the response without logging it, import it into the native client's
-persistent store, and retain its `session_id`. The runtime HTTP 402 challenge is
-authoritative for price, currency, network, and payment terms; do not describe
-the fixed-session price using a guessed per-minute `amountHint`.
+persistent store, and retain its `session_id`. Fixed access costs exactly $0.01
+per minute, with `duration_seconds` restricted to positive multiples of 60. The
+runtime HTTP 402 challenge remains authoritative for realm, currency, recipient,
+network, and exact amount.
 
 Payment creates a paused, globally portable usage balance. Connected time begins
 on activation. A later resume can target a different healthy `node_id` and may
@@ -491,13 +493,13 @@ not a recurring private-key or biometric prompt.
 
 ## Keep streaming separate (Tempo Session v2)
 
-Some nodes also offer metered streaming access at:
+Some nodes also offer metered streaming through the registry affinity route:
 
 ```text
-POST /sessions/stream
+POST https://registry.tempvpn.xyz/sessions/stream
 Content-Type: application/json
 
-{"client_public_key":"<wireguard-public-key>","duration_seconds":<safety-cap>}
+{"node_id":"<selected-node-id>","client_public_key":"<wireguard-public-key>","duration_seconds":<safety-cap>}
 ```
 
 Instead of buying a fixed duration up front, the client opens a Session v2
@@ -530,13 +532,14 @@ On success the node responds `200 text/event-stream` with an
   and `units` when the stream ends
 
 To extend or resume, submit a newer voucher (or an on-chain `TopUp`) whose
-cumulative amount reaches `requiredCumulative`. Use `HEAD /sessions/stream`
-with `client_public_key` and `duration_seconds` as query parameters to submit
+cumulative amount reaches `requiredCumulative`. Use registry
+`HEAD /sessions/stream` with `node_id`, `client_public_key`, and
+`duration_seconds` as query parameters to submit
 channel operations (voucher, top-up, or close) without consuming the SSE body.
 The same logical session resumes once the new state verifies. If the client
 does not replenish within the node's grace period, the peer is removed and the
-stream ends with a final receipt. `GET /sessions/stream` is never payable and
-must return `405 Method Not Allowed`.
+stream ends with a final receipt. Do not call or advertise
+`GET /sessions/stream`; it is not part of the service contract.
 
 If the node answers `404` with "streaming payments are disabled", fall back to
 the fixed `POST /sessions` flow only before any streaming payment is accepted.
