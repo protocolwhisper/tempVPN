@@ -26,7 +26,7 @@ For live service behavior, prefer the machine-readable references maintained
 by the registry:
 
 - Human docs: `https://tempvpn.xyz/docs/`
-- Agent-readable Markdown: `https://registry.tempvpn.xyz/docs/markdown.md`
+- Agent-readable Markdown: `https://registry.tempvpn.xyz/docs/markdown`
 - OpenAPI: `https://registry.tempvpn.xyz/openapi.json`
 - Compact agent reference: `https://registry.tempvpn.xyz/llms.txt`
 

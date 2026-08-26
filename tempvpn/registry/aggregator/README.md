@@ -11,7 +11,7 @@ The aggregator combines the configured regional node catalogs and publishes the 
 - `GET /sessions/{session_id}/status`, `POST .../heartbeat`, and `POST .../pause` manage the fixed-session lifecycle.
 - `POST /sessions/stream` proxies the separate node-bound Session v2 SSE product without imposing a total response timeout.
 - `GET /openapi.json` describes the complete registry-hosted API.
-- `GET /docs` redirects human readers to `https://tempvpn.xyz/docs/`; `GET /docs/markdown.md` serves the agent-readable workflow.
+- `GET /docs` redirects human readers to `https://tempvpn.xyz/docs/`; `GET /docs/markdown` serves the agent-readable workflow (`/docs/markdown.md` remains an alias).
 
 The registry is the public control-plane origin for discovery, payment, and lifecycle calls. Clients select a node from `/nodes`, send its `id` as `node_id` when purchasing or connecting, and keep all HTTP requests at the registry origin. A node's `api_url` is diagnostic metadata, not a client payment origin.
 

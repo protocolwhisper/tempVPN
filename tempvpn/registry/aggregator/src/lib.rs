@@ -93,6 +93,7 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(service_root))
         .route("/docs", get(service_docs))
         .route("/docs/", get(service_docs))
+        .route("/docs/markdown", get(service_docs_markdown))
         .route("/docs/markdown.md", get(service_docs_markdown))
         .route("/llms.txt", get(llms_txt))
         .route("/health", get(health))
@@ -115,7 +116,7 @@ async fn service_root() -> Json<Value> {
         "sessions": "/sessions",
         "health": "/health",
         "docs": "https://tempvpn.xyz/docs/",
-        "docs_markdown": "/docs/markdown.md",
+        "docs_markdown": "/docs/markdown",
         "openapi": "/openapi.json",
         "llms": "/llms.txt"
     }))
@@ -131,7 +132,7 @@ async fn service_docs_markdown() -> Response {
 }
 
 async fn llms_txt() -> Response {
-    let document = "# TempVPN\n\n> Buy temporary WireGuard VPN access with Tempo MPP.\n\nService: https://registry.tempvpn.xyz\nOpenAPI: https://registry.tempvpn.xyz/openapi.json\nDocs: https://tempvpn.xyz/docs/\nMarkdown docs: https://registry.tempvpn.xyz/docs/markdown.md\n\nUse the registry origin for every request below. Node api_url values are diagnostic metadata, not payment origins.\nDiscover nodes: GET /nodes?available=true; retain the selected node id.\nFixed purchase: POST /sessions JSON {\"node_id\": \"madrid\", \"duration_seconds\": 1800}\nConnect fixed session: POST /sessions/<session_id>/connect JSON {\"node_id\": \"madrid\", \"client_public_key\": \"<wireguard-public-key>\"}\nStatus: GET /sessions/<session_id>/status\nHeartbeat: POST /sessions/<session_id>/heartbeat\nPause: POST /sessions/<session_id>/pause\nStreaming: POST /sessions/stream JSON {\"node_id\": \"madrid\", \"client_public_key\": \"<wireguard-public-key>\", \"duration_seconds\": 1800}\nStreaming is a separate node-bound metered product and is not a portable fixed-session balance.\nBilling interval: 60 seconds. Payment: Tempo mainnet MPP; follow the runtime 402 challenge for authoritative price and terms.\nNever send a wallet private key or WireGuard private key to TempVPN.\n";
+    let document = "# TempVPN\n\n> Buy temporary WireGuard VPN access with Tempo MPP.\n\nService: https://registry.tempvpn.xyz\nOpenAPI: https://registry.tempvpn.xyz/openapi.json\nDocs: https://tempvpn.xyz/docs/\nMarkdown docs: https://registry.tempvpn.xyz/docs/markdown\n\nUse the registry origin for every request below. Node api_url values are diagnostic metadata, not payment origins.\nDiscover nodes: GET /nodes?available=true; retain the selected node id.\nFixed purchase: POST /sessions JSON {\"node_id\": \"madrid\", \"duration_seconds\": 1800}\nConnect fixed session: POST /sessions/<session_id>/connect JSON {\"node_id\": \"madrid\", \"client_public_key\": \"<wireguard-public-key>\"}\nStatus: GET /sessions/<session_id>/status\nHeartbeat: POST /sessions/<session_id>/heartbeat\nPause: POST /sessions/<session_id>/pause\nStreaming: POST /sessions/stream JSON {\"node_id\": \"madrid\", \"client_public_key\": \"<wireguard-public-key>\", \"duration_seconds\": 1800}\nStreaming is a separate node-bound metered product and is not a portable fixed-session balance.\nBilling interval: 60 seconds. Payment: Tempo mainnet MPP; follow the runtime 402 challenge for authoritative price and terms.\nNever send a wallet private key or WireGuard private key to TempVPN.\n";
     ([(CONTENT_TYPE, "text/plain; charset=utf-8")], document).into_response()
 }
 
@@ -779,7 +780,7 @@ mod tests {
         let markdown = app
             .oneshot(
                 Request::builder()
-                    .uri("/docs/markdown.md")
+                    .uri("/docs/markdown")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -796,6 +797,18 @@ mod tests {
         let body = std::str::from_utf8(&body).unwrap();
         assert!(body.contains("registry is the control-plane origin"));
         assert!(body.contains("POST /sessions/{session_id}/heartbeat"));
+
+        let compatibility_alias =
+            router(AppState::new(Vec::new(), Duration::from_secs(1)).unwrap())
+                .oneshot(
+                    Request::builder()
+                        .uri("/docs/markdown.md")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+        assert_eq!(compatibility_alias.status(), StatusCode::OK);
     }
 
     #[tokio::test]

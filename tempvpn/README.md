@@ -220,7 +220,7 @@ Deployment follow-up: the directory entry is maintained outside this checkout.
 It must advertise the registry origin and `POST /sessions/stream`, include a
 valid WireGuard public-key request example, and be reindexed after the
 compatible node binary is deployed. The registry OpenAPI, `llms.txt`, and
-`/docs/markdown.md` live in this checkout. The separately maintained website
+`/docs/markdown` live in this checkout. The separately maintained website
 docs must mirror their registry-first workflow.
 
 Production mode fails at startup unless `mpp_session_store = "sqlite"` and
